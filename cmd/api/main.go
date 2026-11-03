@@ -3,11 +3,12 @@ package main
 import (
 	"embed"
 	"io/fs"
-	"path"
 	"log"
 	"net/http"
+	"path"
 	"strings"
 	"time"
+
 	"brevity/internal/config"
 	"brevity/internal/database"
 	"brevity/internal/handlers"
@@ -73,17 +74,16 @@ func main() {
 		log.Fatalf("Failed to create embedded file system: %v", err)
 	}
 	fileServer := http.FileServer(http.FS(webFS))
+
+	// Static Routes with Path Sanitization
 	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
-	    // Clean the path to remove dangerous dot-segments like "./" or "."
-	    cleanPath := path.Clean(r.URL.Path)
-	    
-	    if cleanPath == "/" || cleanPath == "." || cleanPath == "" {
-	        r.URL.Path = "/index.html"
-	    } else {
-	        r.URL.Path = cleanPath
-	    }
-	    
-	    fileServer.ServeHTTP(w, r)
+		cleanPath := path.Clean(r.URL.Path)
+		if cleanPath == "/" || cleanPath == "." || cleanPath == "" {
+			r.URL.Path = "/index.html"
+		} else {
+			r.URL.Path = cleanPath
+		}
+		fileServer.ServeHTTP(w, r)
 	})
 	mux.HandleFunc("GET /index.html", func(w http.ResponseWriter, r *http.Request) {
 		fileServer.ServeHTTP(w, r)
@@ -95,18 +95,20 @@ func main() {
 		fileServer.ServeHTTP(w, r)
 	})
 
+	// Short Code Redirection Route with Strict Validation
 	mux.HandleFunc("GET /{code}", func(w http.ResponseWriter, r *http.Request) {
-	    code := r.PathValue("code")
-	
-	    // Ignore system assets, API requests, and any file with an extension (favicon.ico, styles.css, etc.)
-	    if code == "" || code == "index.html" || code == "dashboard.html" || code == "login.html" ||
-	       strings.HasPrefix(code, "api") || strings.Contains(code, ".") {
-	        http.NotFound(w, r)
-	        return
-	    }
-	
-	    urlHandler.Redirect(w, r)
+		code := r.PathValue("code")
+
+		// Ignore system assets, API requests, and any file with an extension (favicon.ico, styles.css, etc.)
+		if code == "" || code == "index.html" || code == "dashboard.html" || code == "login.html" ||
+			strings.HasPrefix(code, "api") || strings.Contains(code, ".") {
+			http.NotFound(w, r)
+			return
+		}
+
+		urlHandler.Redirect(w, r)
 	})
+
 	// 7. Start the HTTP API Server
 	port := cfg.Port
 	if port == "" {
