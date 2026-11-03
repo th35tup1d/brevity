@@ -87,28 +87,34 @@ func main() {
     )
     mux.HandleFunc("/api/v1/shorten", secureAndRateLimitedHandler)
 
-    // Single registration for "/" and static asset fallback
-    mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-        log.Printf("--> 🌐 ROOT ROUTER CAUGHT PATH: %s", r.URL.Path)
-        path := r.URL.Path
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	    log.Printf("--> 🌐 ROOT ROUTER CAUGHT PATH: %s", r.URL.Path)
+	    path := r.URL.Path
+	
+	    // Serve index.html for root path
+	    if path == "/" || path == "" {
+	        r.URL.Path = "/index.html"
+	        fileServer.ServeHTTP(w, r)
+	        return
+	    }
+	
+	    // Check if the requested file exists in embedded web files
+	    cleanedPath := strings.TrimPrefix(path, "/")
+	    if _, err := fs.Stat(webFS, cleanedPath); err == nil {
+	        fileServer.ServeHTTP(w, r)
+	        return
+	    }
+	
+	    // If it's not a static asset, check if it's a short code or return 404 
+	    // to prevent infinite redirection loops on missing files/paths.
+	    // If you want short codes handled here, delegate ONLY valid short code formats, 
+	    // otherwise return http.NotFound:
+	    http.NotFound(w, r)
+		// Fallback to URL redirection handler for short codes
+		// urlHandler.Redirect(w, r)
 
-        if path == "/" || path == "" {
-            r.URL.Path = "/index.html"
-            fileServer.ServeHTTP(w, r)
-            return
-        }
-
-        // Clean leading slash for fs lookup
-        cleanedPath := strings.TrimPrefix(path, "/")
-        if _, err := fs.Stat(webFS, cleanedPath); err == nil {
-            fileServer.ServeHTTP(w, r)
-            return
-        }
-
-        // Fallback to URL redirection handler for short codes
-        urlHandler.Redirect(w, r)
-    })
-
+	})
+	
     // 7. Start the HTTP API Server
     port := cfg.Port
     if port == "" {
