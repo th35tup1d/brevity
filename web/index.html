@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Brevity - URL Shortener</title>
+    <style>
+        body { font-family: sans-serif; max-width: 600px; margin: 40px auto; padding: 20px; background: #f9f9f9; }
+        .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        input, button { width: 100%; padding: 10px; margin: 8px 0; box-sizing: border-box; }
+        button { background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        button:hover { background: #0056b3; }
+        .nav { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+        .hidden { display: none; }
+        .result { margin-top: 10px; word-break: break-all; }
+    </style>
+</head>
+<body>
+
+    <div class="nav">
+        <h2>⚡ Brevity</h2>
+        <div id="nav-auth">
+            <!-- Dynamically populated based on login state -->
+        </div>
+    </div>
+
+    <!-- Shortener Card (Available to Everyone) -->
+    <div class="card">
+        <h3>Shorten a URL</h3>
+        <form id="shorten-form">
+            <input type="url" id="urlInput" placeholder="Paste long URL here (https://...)" required>
+            <button type="submit">Shorten URL</button>
+        </form>
+        <div id="shorten-result" class="result"></div>
+    </div>
+
+    <!-- Auth Card (Login / Register) -->
+    <div class="card" id="auth-section">
+        <h3 id="auth-title">Sign In</h3>
+        <form id="auth-form">
+            <input type="email" id="email" placeholder="Email address" required>
+            <input type="password" id="password" placeholder="Password" required>
+            <button type="submit" id="auth-btn">Login</button>
+        </form>
+        <p style="text-align: center; margin-top: 10px;">
+            <span id="toggle-text">Don't have an account?</span> 
+            <a href="#" id="auth-toggle-link" onclick="toggleAuthMode(event)">Register</a>
+        </p>
+    </div>
+
+    <script>
+        let isRegisterMode = false;
+
+        function checkAuthNav() {
+            const token = localStorage.getItem('token');
+            const navAuth = document.getElementById('nav-auth');
+            const authSection = document.getElementById('auth-section');
+
+            if (token) {
+                navAuth.innerHTML = `
+                    <a href="dashboard.html" style="margin-right: 15px;">My Dashboard</a>
+                    <button onclick="logout()" style="width: auto; padding: 5px 15px; background: #dc3545;">Logout</button>
+                `;
+                authSection.classList.add('hidden'); // Hide login form if already logged in
+            } else {
+                navAuth.innerHTML = `<span>Browsing Anonymously</span>`;
+                authSection.classList.remove('hidden');
+            }
+        }
+
+        function toggleAuthMode(e) {
+            e.preventDefault();
+            isRegisterMode = !isRegisterMode;
+            document.getElementById('auth-title').innerText = isRegisterMode ? 'Create Account' : 'Sign In';
+            document.getElementById('auth-btn').innerText = isRegisterMode ? 'Register' : 'Login';
+            document.getElementById('toggle-text').innerText = isRegisterMode ? 'Already have an account?' : "Don't have an account?";
+            document.getElementById('auth-toggle-link').innerText = isRegisterMode ? 'Login' : 'Register';
+        }
+
+        // Handle Shorten Form
+        document.getElementById('shorten-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const url = document.getElementById('urlInput').value;
+            const token = localStorage.getItem('token');
+
+            const headers = { 'Content-Type': 'application/json' };
+            if (token) headers['Authorization'] = `Bearer ${token}`;
+
+            const res = await fetch('/api/v1/shorten', {
+                method: 'POST',
+                headers: headers,
+                body: JSON.stringify({ url })
+            });
+
+            if (res.ok) {
+                const data = await res.json();
+                document.getElementById('shorten-result').innerHTML = `Short URL: <a href="${data.short_url}" target="_blank">${data.short_url}</a>`;
+            } else {
+				const errorText = await res.text();
+    			console.error("Backend error response:", errorText);
+                alert('Failed to shorten URL');
+            }
+        });
+
+        // Handle Login / Register Form
+        document.getElementById('auth-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const email = document.getElementById('email').value;
+            const password = document.getElementById('password').value;
+
+            const endpoint = isRegisterMode ? '/api/v1/register' : '/api/v1/login';
+
+            const res = await fetch(endpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email, password })
+            });
+
+            if (res.ok) {
+                const data = await res.json();
+                if (isRegisterMode) {
+                    alert('Registration successful! Please log in.');
+                    toggleAuthMode(e);
+                } else {
+                    localStorage.setItem('token', data.token);
+                    window.location.href = 'dashboard.html'; // Redirect to private dashboard
+                }
+            } else {
+                alert('Authentication failed. Check your credentials.');
+            }
+        });
+
+        function logout() {
+            localStorage.removeItem('token');
+            window.location.reload();
+        }
+
+        checkAuthNav();
+    </script>
+</body>
+</html>

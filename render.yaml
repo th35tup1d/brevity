@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: brevity-url-shortener
+    env: go
+    plan: free
+    buildCommand: go build -o brevity .
+    startCommand: ./brevity
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: GO111MODULE
+        value: on
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_ADDR
+        sync: false
+      - key: REDIS_PASSWORD
+        sync: false

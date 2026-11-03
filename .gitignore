@@ -1,0 +1,15 @@
+# Binaries and build outputs
+brevity
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin/
+
+# Local environment variables
+.env
+
+# OS generated files
+.DS_Store
+Thumbs.db
