@@ -23,7 +23,7 @@ func LoadConfig() *Config {
         dbName := getEnv("DB_NAME", "brevity")
         dbConnStr = "postgres://" + dbUser + ":" + dbPassword + "@" + dbHost + ":" + dbPort + "/" + dbName + "?sslmode=disable"
     }
-
+	log.Printf("DEBUG: Connecting to Database URL starting with: %s", maskConnStr(dbConnStr))
     redisAddr := getEnv("REDIS_ADDR", "localhost:6379")
 
     return &Config{
@@ -38,4 +38,11 @@ func getEnv(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func maskConnStr(s string) string {
+    if len(s) > 20 {
+        return s[:15] + "..." + s[len(s)-10:]
+    }
+    return "***"
 }
