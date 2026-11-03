@@ -90,17 +90,18 @@ func main() {
 		fileServer.ServeHTTP(w, r)
 	})
 
-	// Short Code Redirection Route (Go 1.22+ wildcard matching)
 	mux.HandleFunc("GET /{code}", func(w http.ResponseWriter, r *http.Request) {
-		code := r.PathValue("code")
-		// Prevent intercepting system assets or API requests
-		if code == "" || code == "index.html" || code == "dashboard.html" || code == "login.html" || strings.HasPrefix(code, "api") {
-			http.NotFound(w, r)
-			return
-		}
-		urlHandler.Redirect(w, r)
+	    code := r.PathValue("code")
+	
+	    // Ignore system assets, API requests, and any file with an extension (favicon.ico, styles.css, etc.)
+	    if code == "" || code == "index.html" || code == "dashboard.html" || code == "login.html" ||
+	       strings.HasPrefix(code, "api") || strings.Contains(code, ".") {
+	        http.NotFound(w, r)
+	        return
+	    }
+	
+	    urlHandler.Redirect(w, r)
 	})
-
 	// 7. Start the HTTP API Server
 	port := cfg.Port
 	if port == "" {
