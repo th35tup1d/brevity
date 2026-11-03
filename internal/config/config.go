@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"log"
 )
 
 type Config struct {
