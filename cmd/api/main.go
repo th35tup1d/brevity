@@ -3,6 +3,7 @@ package main
 import (
 	"embed"
 	"io/fs"
+	"path"
 	"log"
 	"net/http"
 	"strings"
@@ -72,13 +73,17 @@ func main() {
 		log.Fatalf("Failed to create embedded file system: %v", err)
 	}
 	fileServer := http.FileServer(http.FS(webFS))
-
-	// Explicit Static File / Page Routes (Mutually Exclusive)
 	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/" || r.URL.Path == "" {
-			r.URL.Path = "/index.html"
-		}
-		fileServer.ServeHTTP(w, r)
+	    // Clean the path to remove dangerous dot-segments like "./" or "."
+	    cleanPath := path.Clean(r.URL.Path)
+	    
+	    if cleanPath == "/" || cleanPath == "." || cleanPath == "" {
+	        r.URL.Path = "/index.html"
+	    } else {
+	        r.URL.Path = cleanPath
+	    }
+	    
+	    fileServer.ServeHTTP(w, r)
 	})
 	mux.HandleFunc("GET /index.html", func(w http.ResponseWriter, r *http.Request) {
 		fileServer.ServeHTTP(w, r)
