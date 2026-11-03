@@ -264,9 +264,14 @@ func (h *URLHandler) ShortenURL(w http.ResponseWriter, r *http.Request) {
     }
 
     // 4. Send the successful JSON response back to the client cleanly
-    w.Header().Set("Content-Type", "application/json")
-    w.WriteHeader(http.StatusCreated)
-    json.NewEncoder(w).Encode(map[string]string{
-        "short_url": "http://localhost:8080/" + shortURL.ShortCode,
-    })
+	baseURL := os.Getenv("BASE_URL")
+	if baseURL == "" {
+	    baseURL = "http://localhost:8080"
+	}
+	
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]string{
+	    "short_url": baseURL + "/" + shortURL.ShortCode,
+	})
 }
