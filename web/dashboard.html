@@ -20,7 +20,7 @@
     <div class="nav">
         <h2>🔒 My Dashboard & Private Links</h2>
         <div>
-            <a href="index.html" style="margin-right: 15px;">Home / Shortener</a>
+            <a href="/index.html" style="margin-right: 15px;">Home / Shortener</a>
             <button onclick="logout()">Logout</button>
         </div>
     </div>
@@ -33,10 +33,11 @@
                     <th>Original URL</th>
                     <th>Short Code</th>
                     <th>Created At</th>
+                    <th>Actions</th>
                 </tr>
             </thead>
             <tbody id="links-table-body">
-                <tr><td colspan="3">Loading your links...</td></tr>
+                <tr><td colspan="4">Loading your links...</td></tr>
             </tbody>
         </table>
     </div>
@@ -45,7 +46,8 @@
         async function fetchMyLinks() {
             const token = localStorage.getItem('token');
             if (!token) {
-                window.location.href = 'index.html'; // Kick out if not logged in
+                // Use replace to prevent history stack redirect loops
+                window.location.replace('/index.html');
                 return;
             }
 
@@ -54,15 +56,14 @@
                     headers: { 'Authorization': `Bearer ${token}` }
                 });
 
-                if (res.status === 401) {
+                if (res.status === 401 || res.status === 403) {
                     logout();
                     return;
                 }
 
                 if (!res.ok) {
-					const errorText = await res.text();
-					throw new Error(`HTTP ${res.status}: ${errorText || 'Unknown server error'}`);
-                    //throw new Error('Failed to fetch user links');
+                    const errorText = await res.text();
+                    throw new Error(`HTTP ${res.status}: ${errorText || 'Unknown server error'}`);
                 }
 
                 const links = await res.json();
@@ -70,59 +71,58 @@
                 tbody.innerHTML = '';
 
                 if (!links || links.length === 0) {
-                    tbody.innerHTML = `<tr><td colspan="3">No private links found yet. Go shorten some!</td></tr>`;
+                    tbody.innerHTML = `<tr><td colspan="4">No private links found yet. Go shorten some!</td></tr>`;
                     return;
                 }
 
                 links.forEach(link => {
                     const tr = document.createElement('tr');
                     
-                    // Format date nicely if needed, or display as-is
                     const formattedDate = link.created_at ? new Date(link.created_at).toLocaleString() : '';
+                    const shortUrl = `${window.location.origin}/${link.short_code}`;
 
                     tr.innerHTML = `
                         <td><a href="${link.original_url}" target="_blank">${link.original_url}</a></td>
-                        <td><a href="http://localhost:8080/${link.short_code}" target="_blank">${link.short_code}</a></td>
+                        <td><a href="${shortUrl}" target="_blank">${link.short_code}</a></td>
                         <td>${formattedDate}</td>
-						<td>
-            <button onclick="deleteLink(${link.id}, this)" style="background: #ff4d4d; color: white; border: none; padding: 4px 8px; border-radius: 4px; cursor: pointer;">Delete</button>
-        </td>
+                        <td>
+                            <button onclick="deleteLink(${link.id}, this)">Delete</button>
+                        </td>
                     `;
                     tbody.appendChild(tr);
                 });
             } catch (err) {
                 console.error("Error fetching links:", err);
                 const tbody = document.getElementById('links-table-body');
-				tbody.innerHTML = `<tr><td colspan="3" style="color: red;">Error: ${err.message}</td></tr>`;
-                //tbody.innerHTML = `<tr><td colspan="3" style="color: red;">Error loading links. Please try again later.</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="4" style="color: red;">Error: ${err.message}</td></tr>`;
             }
         }
 
-		async function deleteLink(id, buttonElement) {
-    try {
-        // Retrieve the token from localStorage (adjust 'token' if your app uses a different key name)
-        const token = localStorage.getItem('token'); 
+        async function deleteLink(id, buttonElement) {
+            try {
+                const token = localStorage.getItem('token'); 
 
-        const response = await fetch(`/api/v1/url/delete?id=${id}`, {
-            method: 'DELETE',
-            headers: {
-                'Authorization': 'Bearer ' + token
+                const response = await fetch(`/api/v1/url/delete?id=${id}`, {
+                    method: 'DELETE',
+                    headers: {
+                        'Authorization': 'Bearer ' + token
+                    }
+                });
+
+                if (response.ok) {
+                    buttonElement.closest('tr').remove();
+                } else {
+                    const errorMsg = await response.text();
+                    alert("Server Error (" + response.status + "): " + errorMsg);
+                }
+            } catch (error) {
+                console.error("Error deleting link:", error);
             }
-        });
-
-        if (response.ok) {
-            buttonElement.closest('tr').remove();
-        } else {
-            const errorMsg = await response.text();
-            alert("Server Error (" + response.status + "): " + errorMsg);
         }
-    } catch (error) {
-        console.error("Error deleting link:", error);
-    }
-}
+
         function logout() {
             localStorage.removeItem('token');
-            window.location.href = 'index.html';
+            window.location.replace('/index.html');
         }
 
         // Run on page load
