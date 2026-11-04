@@ -1,5 +1,5 @@
 # Stage 1: Build the Go binary
-FROM golang:1.26-alpine AS builder
+FROM golang:1.27.3-alpine AS builder
 
 WORKDIR /app
 
@@ -14,7 +14,7 @@ COPY . .
 
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 GOOS=linux GO111MODULE=on go build -o /app/bin/brevity ./cmd/api
+    CGO_ENABLED=0 GOOS=linux GO111MODULE=on go build -o /app/bin/brevity ./
 
 # Stage 2: Minimal runtime image
 FROM alpine:3.19

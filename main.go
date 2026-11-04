@@ -32,7 +32,7 @@ func main() {
 	defer pgPool.Close()
 
 	// 3. Initialize Redis client
-	redisClient, err := database.NewRedisClient(cfg.RedisAddr)
+	redisClient, err := database.NewRedisClient()
 	if err != nil {
 		log.Fatalf("Redis connection error: %v", err)
 	}
