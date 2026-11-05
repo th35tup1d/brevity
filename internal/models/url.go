@@ -10,4 +10,5 @@ type URL struct {
     ShortCode   string    `json:"short_code" redis:"short_code"`
     UserID      *int64    `json:"user_id" redis:"user_id"`
     CreatedAt   time.Time `json:"created_at" redis:"created_at"`
+	IsCustom    bool      `json:"is_custom"`
 }

@@ -28,6 +28,12 @@
         <h3>Shorten a URL</h3>
         <form id="shorten-form">
             <input type="url" id="urlInput" placeholder="Paste long URL here (https://...)" required>
+            
+            <!-- Custom Alias input (Only visible to logged in users) -->
+            <div id="custom-alias-container" class="hidden">
+                <input type="text" id="customAliasInput" placeholder="Custom Alias (optional, e.g. my-link)">
+            </div>
+
             <button type="submit">Shorten URL</button>
         </form>
         <div id="shorten-result" class="result"></div>
@@ -54,6 +60,7 @@
             const token = localStorage.getItem('token');
             const navAuth = document.getElementById('nav-auth');
             const authSection = document.getElementById('auth-section');
+            const customAliasContainer = document.getElementById('custom-alias-container');
 
             if (token) {
                 navAuth.innerHTML = `
@@ -61,9 +68,11 @@
                     <button onclick="logout()" style="width: auto; padding: 5px 15px; background: #dc3545;">Logout</button>
                 `;
                 authSection.classList.add('hidden'); // Hide login form if already logged in
+                customAliasContainer.classList.remove('hidden'); // Show custom alias input for logged-in users
             } else {
                 navAuth.innerHTML = `<span>Browsing Anonymously</span>`;
                 authSection.classList.remove('hidden');
+                customAliasContainer.classList.add('hidden'); // Hide custom alias input for guests
             }
         }
 
@@ -80,24 +89,30 @@
         document.getElementById('shorten-form').addEventListener('submit', async (e) => {
             e.preventDefault();
             const url = document.getElementById('urlInput').value;
+            const customAlias = document.getElementById('customAliasInput')?.value.trim();
             const token = localStorage.getItem('token');
 
             const headers = { 'Content-Type': 'application/json' };
             if (token) headers['Authorization'] = `Bearer ${token}`;
 
+            const payload = { url };
+            if (customAlias) {
+                payload.custom_alias = customAlias;
+            }
+
             const res = await fetch('/api/v1/shorten', {
                 method: 'POST',
                 headers: headers,
-                body: JSON.stringify({ url })
+                body: JSON.stringify(payload)
             });
 
             if (res.ok) {
                 const data = await res.json();
                 document.getElementById('shorten-result').innerHTML = `Short URL: <a href="${data.short_url}" target="_blank">${data.short_url}</a>`;
             } else {
-				const errorText = await res.text();
-    			console.error("Backend error response:", errorText);
-                alert('Failed to shorten URL');
+                const errorText = await res.text();
+                console.error("Backend error response:", errorText);
+                alert(errorText || 'Failed to shorten URL');
             }
         });
 
@@ -122,7 +137,7 @@
                     toggleAuthMode(e);
                 } else {
                     localStorage.setItem('token', data.token);
-                    window.location.href = '/dashboard.html'; // Redirect to private dashboard
+                    window.location.reload(); // Reload to reflect authenticated state and reveal custom alias field
                 }
             } else {
                 alert('Authentication failed. Check your credentials.');

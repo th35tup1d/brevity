@@ -9,9 +9,10 @@ CREATE TABLE IF NOT EXISTS users (
 -- Core URLs table (updated with user_id)
 CREATE TABLE IF NOT EXISTS urls (
     id BIGSERIAL PRIMARY KEY,
-    short_code VARCHAR(16) UNIQUE NOT NULL,
+    short_code VARCHAR(50) UNIQUE NOT NULL,
     long_url TEXT NOT NULL,
     user_id BIGINT REFERENCES users(id) ON DELETE CASCADE, -- NULL for anonymous, User ID for private links
+	is_custom BOOLEAN DEFAULT FALSE NOT NULL,            -- Added to track custom aliases
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     expires_at TIMESTAMP WITH TIME ZONE
 );

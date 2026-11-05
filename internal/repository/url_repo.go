@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"brevity/internal/models"
+
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -13,27 +15,27 @@ type URLRepository struct {
 	db *pgxpool.Pool
 }
 
-
-func (r *URLRepository) InsertURL(ctx context.Context, longURL string, shortCode string, userID *int64) (*models.URL, error) {
-    query := `INSERT INTO urls (long_url, short_code, user_id) VALUES ($1, $2, $3) RETURNING id, long_url, short_code, user_id, created_at`
-    
-    var url models.URL
-    // PostgreSQL automatically handles userID as NULL if it's a nil *int64 pointer
-    err := r.db.QueryRow(ctx, query, longURL, shortCode, userID).Scan(
-        &url.ID, &url.OriginalURL, &url.ShortCode, &url.UserID, &url.CreatedAt,
-    )
-    if err != nil {
-        return nil, err
-    }
-    return &url, nil
-}
-
-
 func NewURLRepository(db *pgxpool.Pool) *URLRepository {
 	return &URLRepository{db: db}
 }
 
-// InsertURL inserts a long URL with a placeholder short code and returns the auto-generated ID
+func (r *URLRepository) InsertURL(ctx context.Context, longURL string, shortCode string, userID *int64, isCustom bool) (*models.URL, error) {
+	query := `INSERT INTO urls (long_url, short_code, user_id, is_custom) VALUES ($1, $2, $3, $4) RETURNING id, long_url, short_code, user_id, created_at, is_custom`
+	
+	var url models.URL
+	err := r.db.QueryRow(ctx, query, longURL, shortCode, userID, isCustom).Scan(
+		&url.ID, &url.OriginalURL, &url.ShortCode, &url.UserID, &url.CreatedAt, &url.IsCustom,
+	)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return nil, errors.New("alias is already taken")
+		}
+		return nil, err
+	}
+	return &url, nil
+}
+
 // UpdateShortCode updates the row with the calculated Base62 short code
 func (r *URLRepository) UpdateShortCode(ctx context.Context, id int64, shortCode string) error {
 	query := `UPDATE urls SET short_code = $1 WHERE id = $2`
@@ -45,22 +47,22 @@ func (r *URLRepository) UpdateShortCode(ctx context.Context, id int64, shortCode
 }
 
 func (r *URLRepository) GetURLsByUserID(ctx context.Context, userID int64) ([]models.URL, error) {
-	query := "SELECT id, original_url, short_code, created_at, user_id FROM urls WHERE user_id = $1 ORDER BY id DESC"
-    rows, err := r.db.Query(ctx, query, userID)
-    if err != nil {
-        return nil, err
-    }
-    defer rows.Close()
+	query := "SELECT id, long_url, short_code, created_at, user_id, is_custom FROM urls WHERE user_id = $1 ORDER BY id DESC"
+	rows, err := r.db.Query(ctx, query, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
 
-    var urls []models.URL
-    for rows.Next() {
-        var u models.URL
-        if err := rows.Scan(&u.ID, &u.OriginalURL, &u.ShortCode, &u.CreatedAt, &u.UserID); err != nil {
-            return nil, err
-        }
-        urls = append(urls, u)
-    }
-    return urls, nil
+	var urls []models.URL
+	for rows.Next() {
+		var u models.URL
+		if err := rows.Scan(&u.ID, &u.OriginalURL, &u.ShortCode, &u.CreatedAt, &u.UserID, &u.IsCustom); err != nil {
+			return nil, err
+		}
+		urls = append(urls, u)
+	}
+	return urls, nil
 }
 
 // FindByShortCode retrieves the original long URL given a short code

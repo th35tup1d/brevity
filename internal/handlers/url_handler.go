@@ -2,20 +2,60 @@ package handlers
 
 import (
 	"encoding/json"
-	"os"
-	"net/http"
-	"strconv"
-	"time"
-	"strings"
-	"github.com/jackc/pgx/v5/pgxpool"
-	"brevity/internal/service"
+	"errors"
 	"log"
+	"net/http"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+
+	"brevity/internal/service"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 )
 
-//type URLHandler struct {
-//	DB *pgxpool.Pool
-//}
+// Define the struct fields to match what you are assigning
+type URLHandler struct {
+	urlSvc      *service.URLService
+	DB          *pgxpool.Pool
+	redisClient *redis.Client
+}
+
+func NewURLHandler(urlSvc *service.URLService, db *pgxpool.Pool, rdb *redis.Client) *URLHandler {
+	return &URLHandler{
+		urlSvc:      urlSvc,
+		DB:          db,
+		redisClient: rdb,
+	}
+}
+
+// Custom Alias Validation Helpers
+
+var reservedKeywords = map[string]bool{
+	"api":       true,
+	"admin":     true,
+	"login":     true,
+	"register":  true,
+	"dashboard": true,
+	"health":    true,
+	"static":    true,
+}
+
+func ValidateAlias(alias string) error {
+	if alias == "" {
+		return nil // Optional, falls back to auto-generation
+	}
+
+	alias = strings.ToLower(alias)
+
+	if reservedKeywords[alias] {
+		return errors.New("this alias is reserved and cannot be used")
+	}
+
+	return nil
+}
 
 func (h *URLHandler) GetMyURLs(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -43,7 +83,6 @@ func (h *URLHandler) GetMyURLs(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.DB.Query(r.Context(), "SELECT id, long_url, short_code, created_at FROM urls WHERE user_id = $1 ORDER BY id DESC", userID)
 	if err != nil {
 		http.Error(w, "DB Error: "+err.Error(), http.StatusInternalServerError)
-		//http.Error(w, "Database error", http.StatusInternalServerError)
 		return
 	}
 	defer rows.Close()
@@ -69,24 +108,6 @@ func (h *URLHandler) GetMyURLs(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(links)
 }
-
-// Define the struct fields to match what you are assigning
-type URLHandler struct {
-    urlSvc        *service.URLService
-    DB *pgxpool.Pool
-	redisClient *redis.Client
-}
-
-
-
-func NewURLHandler(urlSvc *service.URLService, db *pgxpool.Pool, rdb *redis.Client) *URLHandler {
-    return &URLHandler{
-        urlSvc:      urlSvc,
-        DB:          db,
-        redisClient: rdb,
-    }
-}
-
 
 func (h *URLHandler) DeleteURL(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodDelete {
@@ -185,94 +206,106 @@ func (h *URLHandler) Redirect(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, originalURL, http.StatusTemporaryRedirect)
 }
 
-
 func (h *URLHandler) GetUserURLs(w http.ResponseWriter, r *http.Request) {
-    // Safely extract user_id, handling potential type variations from JWT claims
-    val := r.Context().Value("user_id")
-    if val == nil {
-        http.Error(w, "Unauthorized: no user context found", http.StatusUnauthorized)
-        return
-    }
+	val := r.Context().Value("user_id")
+	if val == nil {
+		http.Error(w, "Unauthorized: no user context found", http.StatusUnauthorized)
+		return
+	}
 
-    var userID int64
-    switch v := val.(type) {
-    case int64:
-        userID = v
-    case int:
-        userID = int64(v)
-    case float64:
-        userID = int64(v)
-    default:
-        http.Error(w, "Unauthorized: invalid user ID type", http.StatusUnauthorized)
-        return
-    }
+	var userID int64
+	switch v := val.(type) {
+	case int64:
+		userID = v
+	case int:
+		userID = int64(v)
+	case float64:
+		userID = int64(v)
+	default:
+		http.Error(w, "Unauthorized: invalid user ID type", http.StatusUnauthorized)
+		return
+	}
 
-    // Fetch links from service
-    links, err := h.urlSvc.GetURLsByUserID(r.Context(), userID)
-    if err != nil {
+	links, err := h.urlSvc.GetURLsByUserID(r.Context(), userID)
+	if err != nil {
 		http.Error(w, "DEBUG_TEST_NEW_CODE_IS_RUNNING", http.StatusInternalServerError)
-		//http.Error(w, err.Error(), http.StatusInternalServerError)
-        // This writes the exact database error straight to the HTTP response
-        //http.Error(w, "Database error: "+err.Error(), http.StatusInternalServerError)
-        return
-    }
+		return
+	}
 
-    w.Header().Set("Content-Type", "application/json")
-    json.NewEncoder(w).Encode(links)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(links)
 }
 
 func (h *URLHandler) ShortenURL(w http.ResponseWriter, r *http.Request) {
-    if r.Method != http.MethodPost {
-        http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-        return
-    }
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 
-    // 1. Decode the request body once
-    var createReq struct {
-        LongURL string `json:"url"`
-    }
-    if err := json.NewDecoder(r.Body).Decode(&createReq); err != nil {
-        http.Error(w, "Invalid request body", http.StatusBadRequest)
-        return
-    }
+	// 1. Decode the request body supporting both url and optional custom_alias
+	var createReq struct {
+		LongURL     string `json:"url"`
+		CustomAlias string `json:"custom_alias,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&createReq); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
 
-    // 2. Safely extract the user ID from the context (supporting *int64, int64, or float64 formats)
-    var userIDPtr *int64
-    if rawUserID := r.Context().Value("user_id"); rawUserID != nil {
-        switch id := rawUserID.(type) {
-        case *int64:
-            userIDPtr = id
-        case int64:
-            userIDPtr = &id
-        case float64:
-            val := int64(id)
-            userIDPtr = &val
-        }
-    } else if rawAlt := r.Context().Value("userID"); rawAlt != nil {
-        // Fallback for alternate context key naming conventions
-        if floatID, ok := rawAlt.(float64); ok {
-            val := int64(floatID)
-            userIDPtr = &val
-        }
-    }
+	// 2. Validate custom alias if provided
+	createReq.CustomAlias = strings.TrimSpace(createReq.CustomAlias)
+	if err := ValidateAlias(createReq.CustomAlias); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
-    // 3. Delegate to the service layer (handles code generation, DB insert, and optional Redis caching)
-    shortURL, err := h.urlSvc.CreateShortURL(r.Context(), createReq.LongURL, userIDPtr)
-    if err != nil {
-        log.Println("ERROR in CreateShortURL service:", err)
-        http.Error(w, "Database error while saving URL", http.StatusInternalServerError)
-        return
-    }
+	// 3. Safely extract the user ID from the context
+	var userIDPtr *int64
+	if rawUserID := r.Context().Value("user_id"); rawUserID != nil {
+		switch id := rawUserID.(type) {
+		case *int64:
+			userIDPtr = id
+		case int64:
+			userIDPtr = &id
+		case float64:
+			val := int64(id)
+			userIDPtr = &val
+		}
+	} else if rawAlt := r.Context().Value("userID"); rawAlt != nil {
+		if floatID, ok := rawAlt.(float64); ok {
+			val := int64(floatID)
+			userIDPtr = &val
+		}
+	}
 
-    // 4. Send the successful JSON response back to the client cleanly
+	// 4. Enforce that custom aliases are restricted to signed-in users only
+	if createReq.CustomAlias != "" && userIDPtr == nil {
+		http.Error(w, "Custom aliases are only available for signed-in users", http.StatusUnauthorized)
+		return
+	}
+
+	// 5. Delegate to the service layer
+	shortURL, err := h.urlSvc.CreateShortURLWithAlias(r.Context(), createReq.LongURL, createReq.CustomAlias, userIDPtr)
+	if err != nil {
+		log.Println("ERROR in CreateShortURL service:", err)
+		if err.Error() == "alias is already taken" {
+			http.Error(w, "The custom alias is already taken. Please choose another.", http.StatusConflict)
+			return
+		}
+		http.Error(w, "Database error while saving URL", http.StatusInternalServerError)
+		return
+	}
+
+	// 6. Send the successful JSON response back to the client cleanly
 	baseURL := os.Getenv("BASE_URL")
 	if baseURL == "" {
-	    baseURL = "http://localhost:8080"
+		baseURL = "http://localhost:8080"
 	}
 	
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]string{
-	    "short_url": baseURL + "/" + shortURL.ShortCode,
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"short_url": baseURL + "/" + shortURL.ShortCode,
+		"is_custom": shortURL.IsCustom,
 	})
 }
