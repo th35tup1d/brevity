@@ -96,3 +96,15 @@ func (r *URLRepository) GetURLIDByShortCode(ctx context.Context, shortCode strin
 	}
 	return id, nil
 }
+
+func (r *URLRepository) GetURLRecord(ctx context.Context, shortCode string) (*models.URLRecord, error) {
+    query := `SELECT long_url, expires_at FROM urls WHERE short_code = $1`
+
+    var record models.URLRecord
+    err := r.db.QueryRow(ctx, query, shortCode).Scan(&record.LongURL, &record.ExpiresAt)
+    if err != nil {
+        return nil, err
+    }
+
+    return &record, nil
+}

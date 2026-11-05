@@ -18,6 +18,11 @@ type URLService struct {
 	redisClient *redis.Client
 }
 
+type URLRecord struct {
+    LongURL   string
+    ExpiresAt *time.Time
+}
+
 func NewURLService(repo *repository.URLRepository, redisClient *redis.Client) *URLService {
 	return &URLService{
 		repo:        repo,
@@ -95,7 +100,10 @@ func generateShortCode() string {
 	return string(b)
 }
 
-// GetLongURL implements the Cache-Aside pattern for blazing-fast redirects
+func (s *URLService) GetURLRecord(ctx context.Context, shortCode string) (*models.URLRecord, error) {
+    return s.repo.GetURLRecord(ctx, shortCode)
+}
+
 func (s *URLService) GetLongURL(ctx context.Context, shortCode string) (string, error) {
 	cachedURL, err := s.redisClient.Get(ctx, shortCode).Result()
 	if err == nil {

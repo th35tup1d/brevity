@@ -12,3 +12,8 @@ type URL struct {
     CreatedAt   time.Time `json:"created_at" redis:"created_at"`
 	IsCustom    bool      `json:"is_custom"`
 }
+
+type URLRecord struct {
+    LongURL   string
+    ExpiresAt *time.Time
+}

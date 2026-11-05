@@ -186,12 +186,21 @@ func (h *URLHandler) Redirect(w http.ResponseWriter, r *http.Request) {
 
 	// 3. Fall back to Database
 	log.Printf("--> [3] Querying PostgreSQL for short code: '%s'", shortCode)
-	originalURL, err := h.urlSvc.GetLongURL(ctx, shortCode)
+	urlRecord, err := h.urlSvc.GetURLRecord(ctx, shortCode)
 	if err != nil {
 		log.Printf("--> ❌ [DB ERROR] Failed to find long URL for code '%s': %v", shortCode, err)
 		http.Error(w, "Short link not found", http.StatusNotFound)
 		return
-	}   
+	}    
+
+	// Check if the link has expired
+	if urlRecord.ExpiresAt != nil && time.Now().After(*urlRecord.ExpiresAt) {
+		log.Printf("--> ⏰ [EXPIRED] Short link '%s' has expired", shortCode)
+		http.Error(w, "This link has expired", http.StatusGone)
+		return
+	}
+
+	originalURL := urlRecord.LongURL
 
 	log.Printf("--> [4] Found in DB: '%s'. Writing back to Redis cache...", originalURL)
 
