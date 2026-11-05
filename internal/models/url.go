@@ -11,6 +11,7 @@ type URL struct {
     UserID      *int64    `json:"user_id" redis:"user_id"`
     CreatedAt   time.Time `json:"created_at" redis:"created_at"`
 	IsCustom    bool      `json:"is_custom"`
+	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
 }
 
 type URLRecord struct {

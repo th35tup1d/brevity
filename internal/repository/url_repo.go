@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"time"
 	"errors"
 	"fmt"
 	"brevity/internal/models"
@@ -107,4 +108,22 @@ func (r *URLRepository) GetURLRecord(ctx context.Context, shortCode string) (*mo
     }
 
     return &record, nil
+}
+
+func (r *URLRepository) CreateURL(ctx context.Context, userID *int64, longURL, shortCode string, isCustom bool, expiresAt *time.Time) (*models.URL, error) {
+	query := `
+		INSERT INTO urls (long_url, short_code, user_id, is_custom, expires_at)
+		VALUES ($1, $2, $3, $4, $5)
+		RETURNING id, long_url, short_code, created_at, user_id, is_custom, expires_at
+	`
+
+	var url models.URL
+	err := r.db.QueryRow(ctx, query, longURL, shortCode, userID, isCustom, expiresAt).Scan(
+		&url.ID, &url.OriginalURL, &url.ShortCode, &url.CreatedAt, &url.UserID, &url.IsCustom, &url.ExpiresAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return &url, nil
 }

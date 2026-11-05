@@ -251,10 +251,11 @@ func (h *URLHandler) ShortenURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 1. Decode the request body supporting both url and optional custom_alias
+	// 1. Decode the request body supporting url, optional custom_alias, and optional expires_at
 	var createReq struct {
-		LongURL     string `json:"url"`
-		CustomAlias string `json:"custom_alias,omitempty"`
+		LongURL     string     `json:"url"`
+		CustomAlias string     `json:"custom_alias,omitempty"`
+		ExpiresAt   *time.Time `json:"expires_at,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&createReq); err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
@@ -293,8 +294,19 @@ func (h *URLHandler) ShortenURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 5. Delegate to the service layer
-	shortURL, err := h.urlSvc.CreateShortURLWithAlias(r.Context(), createReq.LongURL, createReq.CustomAlias, userIDPtr)
+	// 5. Enforce expiration rules based on authentication status
+	var finalExpiresAt *time.Time
+	if userIDPtr == nil {
+		// Anonymous users: Strictly enforce a 24-hour expiration
+		defaultExpiry := time.Now().Add(24 * time.Hour)
+		finalExpiresAt = &defaultExpiry
+	} else {
+		// Authenticated users: Allow requested custom expiration (can be nil for permanent)
+		finalExpiresAt = createReq.ExpiresAt
+	}
+
+	// 6. Delegate to the service layer (passing finalExpiresAt)
+	shortURL, err := h.urlSvc.CreateShortURLWithAlias(r.Context(), createReq.LongURL, createReq.CustomAlias, userIDPtr, finalExpiresAt)
 	if err != nil {
 		log.Println("ERROR in CreateShortURL service:", err)
 		if err.Error() == "alias is already taken" {
@@ -305,7 +317,7 @@ func (h *URLHandler) ShortenURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 6. Send the successful JSON response back to the client cleanly
+	// 7. Send the successful JSON response back to the client cleanly
 	baseURL := os.Getenv("BASE_URL")
 	if baseURL == "" {
 		baseURL = "http://localhost:8080"
@@ -314,7 +326,8 @@ func (h *URLHandler) ShortenURL(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"short_url": baseURL + "/" + shortURL.ShortCode,
-		"is_custom": shortURL.IsCustom,
+		"short_url":  baseURL + "/" + shortURL.ShortCode,
+		"is_custom":  shortURL.IsCustom,
+		"expires_at": finalExpiresAt,
 	})
 }

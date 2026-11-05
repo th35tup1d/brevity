@@ -65,8 +65,7 @@ func (s *URLService) CreateShortURL(ctx context.Context, longURL string, userID 
 	return url, nil
 }
 
-// CreateShortURLWithAlias handles custom user-defined aliases or falls back to random generation
-func (s *URLService) CreateShortURLWithAlias(ctx context.Context, longURL string, customAlias string, userID *int64) (*models.URL, error) {
+func (s *URLService) CreateShortURLWithAlias(ctx context.Context, longURL string, customAlias string, userID *int64, expiresAt *time.Time) (*models.URL, error) {
 	var shortCode string
 	var isCustom bool
 
@@ -78,13 +77,22 @@ func (s *URLService) CreateShortURLWithAlias(ctx context.Context, longURL string
 		isCustom = false
 	}
 
-	url, err := s.repo.InsertURL(ctx, longURL, shortCode, userID, isCustom)
+	// Pass the generated shortCode and expiresAt into your repository
+	url, err := s.repo.CreateURL(ctx, userID, longURL, shortCode, isCustom, expiresAt)
 	if err != nil {
 		return nil, err
 	}
 
 	if s.redisClient != nil {
-		_ = s.redisClient.Set(ctx, shortCode, longURL, 24*time.Hour).Err()
+		// Calculate appropriate Redis TTL based on the expiration time if available
+		ttl := 24 * time.Hour
+		if expiresAt != nil {
+			ttl = time.Until(*expiresAt)
+			if ttl < 0 {
+				ttl = time.Minute
+			}
+		}
+		_ = s.redisClient.Set(ctx, shortCode, longURL, ttl).Err()
 	}
 
 	return url, nil
