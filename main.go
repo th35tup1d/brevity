@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
-
+ 	"context"
 	"brevity/internal/config"
 	"brevity/internal/database"
 	"brevity/internal/handlers"
@@ -45,6 +45,9 @@ func main() {
 
 	urlSvc := service.NewURLService(urlRepo, redisClient)
 	urlHandler := handlers.NewURLHandler(urlSvc, pgPool, redisClient)
+
+	ctx := context.Background()
+    urlSvc.StartCleanupWorker(ctx, 1*time.Hour)
 
 	// 5. Setup HTTP routes & Middleware
 	mux := http.NewServeMux()

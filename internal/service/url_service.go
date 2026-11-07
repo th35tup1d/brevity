@@ -4,7 +4,7 @@ import (
 	"context"
 	"math/rand"
 	"time"
-
+	"log"
 	"brevity/internal/models"
 	"brevity/internal/repository"
 
@@ -114,6 +114,7 @@ func generateShortCode() string {
 	return string(b)
 }
 
+
 func (s *URLService) GetURLRecord(ctx context.Context, shortCode string) (*models.URLRecord, error) {
     return s.repo.GetURLRecord(ctx, shortCode)
 }
@@ -132,4 +133,24 @@ func (s *URLService) GetLongURL(ctx context.Context, shortCode string) (string, 
 	_ = s.redisClient.Set(ctx, shortCode, longURL, 24*time.Hour).Err()
 
 	return longURL, nil
+}
+
+func (s *URLService) StartCleanupWorker(ctx context.Context, interval time.Duration) {
+    ticker := time.NewTicker(interval)
+    go func() {
+        for {
+            select {
+            case <-ticker.C:
+                count, err := s.repo.DeleteExpiredURLs(ctx)
+                if err != nil {
+                    log.Printf("--> ⚠️ [CLEANUP ERROR] Failed to delete expired URLs: %v", err)
+                } else if count > 0 {
+                    log.Printf("--> 🧹 [CLEANUP] Successfully removed %d expired short links from database", count)
+                }
+            case <-ctx.Done():
+                ticker.Stop()
+                return
+            }
+        }
+    }()
 }

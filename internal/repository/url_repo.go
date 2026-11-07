@@ -127,3 +127,12 @@ func (r *URLRepository) CreateURL(ctx context.Context, userID *int64, longURL, s
 
 	return &url, nil
 }
+
+func (r *URLRepository) DeleteExpiredURLs(ctx context.Context) (int64, error) {
+    query := `DELETE FROM urls WHERE expires_at IS NOT NULL AND expires_at < NOW()`
+    result, err := r.db.Exec(ctx, query)
+    if err != nil {
+        return 0, err
+    }
+    return result.RowsAffected(), nil
+}
