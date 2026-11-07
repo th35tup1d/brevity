@@ -6,12 +6,13 @@
     <style>
         body { font-family: sans-serif; max-width: 600px; margin: 40px auto; padding: 20px; background: #f9f9f9; }
         .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 20px; }
-        input, button { width: 100%; padding: 10px; margin: 8px 0; box-sizing: border-box; }
+        input, button, select { width: 100%; padding: 10px; margin: 8px 0; box-sizing: border-box; }
         button { background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
         button:hover { background: #0056b3; }
         .nav { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
         .hidden { display: none; }
         .result { margin-top: 10px; word-break: break-all; }
+        .msg-info { color: #555; font-size: 0.9em; margin-top: 4px; }
     </style>
 </head>
 <body>
@@ -33,18 +34,20 @@
             <div id="custom-alias-container" class="hidden">
                 <input type="text" id="customAliasInput" placeholder="Custom Alias (optional, e.g. my-link)">
             </div>
-			<!-- Inside your #shorten-form -->
-			<div style="margin: 8px 0;">
-			    <label for="expiresIn" style="font-size: 14px; color: #555;">Expires in:</label>
-			    <select id="expiresIn" style="width: 100%; padding: 8px; margin-top: 4px;">
-			        <option value="">Never (Permanent)</option>
-			        <option value="1">1 Hour</option>
-			        <option value="24">1 Day</option>
-			        <option value="168">7 Days</option>
-			        <option value="720">30 Days</option>
-			    </select>
-			</div>
-			<button type="submit">Shorten URL</button>
+
+            <!-- Expiration input container (Only visible to logged in users) -->
+            <div id="expiration-container" class="hidden" style="margin: 8px 0;">
+                <label for="expiresIn" style="font-size: 14px; color: #555;">Expires in:</label>
+                <select id="expiresIn">
+                    <option value="">Never (Permanent)</option>
+                    <option value="1">1 Hour</option>
+                    <option value="24">1 Day</option>
+                    <option value="168">7 Days</option>
+                    <option value="720">30 Days</option>
+                </select>
+            </div>
+
+            <button type="submit">Shorten URL</button>
         </form>
         <div id="shorten-result" class="result"></div>
     </div>
@@ -71,18 +74,21 @@
             const navAuth = document.getElementById('nav-auth');
             const authSection = document.getElementById('auth-section');
             const customAliasContainer = document.getElementById('custom-alias-container');
+            const expirationContainer = document.getElementById('expiration-container');
 
             if (token) {
                 navAuth.innerHTML = `
                     <a href="dashboard.html" style="margin-right: 15px;">My Dashboard</a>
                     <button onclick="logout()" style="width: auto; padding: 5px 15px; background: #dc3545;">Logout</button>
                 `;
-                authSection.classList.add('hidden'); // Hide login form if already logged in
-                customAliasContainer.classList.remove('hidden'); // Show custom alias input for logged-in users
+                authSection.classList.add('hidden'); 
+                customAliasContainer.classList.remove('hidden'); // Show custom alias for logged-in users
+                expirationContainer.classList.remove('hidden'); // Show custom expiration choices for logged-in users
             } else {
                 navAuth.innerHTML = `<span>Browsing Anonymously</span>`;
                 authSection.classList.remove('hidden');
-                customAliasContainer.classList.add('hidden'); // Hide custom alias input for guests
+                customAliasContainer.classList.add('hidden');   // Hide custom alias for guests
+                expirationContainer.classList.add('hidden');  // Hide expiration select for guests
             }
         }
 
@@ -105,18 +111,19 @@
             const headers = { 'Content-Type': 'application/json' };
             if (token) headers['Authorization'] = `Bearer ${token}`;
 
-			const expiresInHours = document.getElementById('expiresIn').value;
-			let expiresAt = null;
-			if (expiresInHours) {
-			    const date = new Date();
-			    date.setTime(date.getTime() + (parseInt(expiresInHours) * 60 * 60 * 1000));
-			    expiresAt = date.toISOString();
-			}
             const payload = { url };
-            if (customAlias) {
-                payload.custom_alias = customAlias;
+
+            // Only attach custom alias and expiration if logged in
+            if (token) {
+                if (customAlias) payload.custom_alias = customAlias;
+
+                const expiresInHours = document.getElementById('expiresIn').value;
+                if (expiresInHours) {
+                    const date = new Date();
+                    date.setTime(date.getTime() + (parseInt(expiresInHours) * 60 * 60 * 1000));
+                    payload.expires_at = date.toISOString();
+                }
             }
-			if (expiresAt) payload.expires_at = expiresAt;
 
             const res = await fetch('/api/v1/shorten', {
                 method: 'POST',
@@ -126,7 +133,16 @@
 
             if (res.ok) {
                 const data = await res.json();
-                document.getElementById('shorten-result').innerHTML = `Short URL: <a href="${data.short_url}" target="_blank">${data.short_url}</a>`;
+                const resultDiv = document.getElementById('shorten-result');
+                
+                let html = `Short URL: <a href="${data.short_url}" target="_blank">${data.short_url}</a>`;
+                
+                // Show server message if present (e.g. "Link will expire in 24 hours")
+                if (data.message) {
+                    html += `<div class="msg-info">ℹ️ ${data.message}</div>`;
+                }
+                
+                resultDiv.innerHTML = html;
             } else {
                 const errorText = await res.text();
                 console.error("Backend error response:", errorText);
@@ -155,7 +171,7 @@
                     toggleAuthMode(e);
                 } else {
                     localStorage.setItem('token', data.token);
-                    window.location.reload(); // Reload to reflect authenticated state and reveal custom alias field
+                    window.location.reload(); 
                 }
             } else {
                 alert('Authentication failed. Check your credentials.');

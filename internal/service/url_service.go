@@ -77,7 +77,13 @@ func (s *URLService) CreateShortURLWithAlias(ctx context.Context, longURL string
 		isCustom = false
 	}
 
-	// Pass the generated shortCode and expiresAt into your repository
+	// If user is anonymous, override any custom expiration to 24 hours
+	if userID == nil {
+		defaultExp := time.Now().Add(24 * time.Hour)
+		expiresAt = &defaultExp
+	}
+
+	// Pass the generated shortCode, isCustom, and expiresAt into your repository
 	url, err := s.repo.CreateURL(ctx, userID, longURL, shortCode, isCustom, expiresAt)
 	if err != nil {
 		return nil, err

@@ -317,17 +317,27 @@ func (h *URLHandler) ShortenURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 7. Send the successful JSON response back to the client cleanly
+	// 7. Determine the message based on user status and expiration
+	message := "Link created successfully"
+	if userIDPtr == nil {
+		message = "Link will expire in 24 hours"
+	} else if createReq.ExpiresAt != nil {
+		message = "Link created with custom expiration"
+	}
+
+	// 8. Send the successful JSON response back to the client cleanly
 	baseURL := os.Getenv("BASE_URL")
 	if baseURL == "" {
 		baseURL = "http://localhost:8080"
 	}
-	
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":    true,
 		"short_url":  baseURL + "/" + shortURL.ShortCode,
 		"is_custom":  shortURL.IsCustom,
 		"expires_at": finalExpiresAt,
+		"message":    message,
 	})
 }
