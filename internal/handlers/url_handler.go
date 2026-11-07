@@ -173,18 +173,18 @@ func (h *URLHandler) Redirect(w http.ResponseWriter, r *http.Request) {
 	log.Printf("--> [2] Checking Redis cache for key: '%s'", cacheKey)
 
 	// 2. Try Redis Cache
+	// Note: If you want to strictly check expiration on cache hits, you can fetch 
+	// the DB record directly or store expiration metadata in Redis. Falling back 
+	// to DB or checking record validity ensures expired links cached in Redis are caught.
 	cachedURL, err := h.redisClient.Get(ctx, cacheKey).Result()
 	if err == nil && cachedURL != "" {
-		log.Printf("--> 🔥 [CACHE HIT] Found '%s' in Redis! Redirecting instantly to: '%s'", shortCode, cachedURL)
-		http.Redirect(w, r, cachedURL, http.StatusTemporaryRedirect)
-		return
+		// To ensure expired links aren't served from cache, we can query the DB record or 
+		// let the DB fallback handle it. But if it's in Redis, let's verify expiration via DB if needed,
+		// or query the full record first. For simplicity and robust expiration checks, 
+		// let's fall through or check expiration from DB record.
 	}
 
-	if err != nil {
-		log.Printf("--> ❄️ [CACHE MISS] Redis get returned error (normal if first time): %v", err)
-	}
-
-	// 3. Fall back to Database
+	// 3. Query PostgreSQL for the full URL record (to check expiration reliably)
 	log.Printf("--> [3] Querying PostgreSQL for short code: '%s'", shortCode)
 	urlRecord, err := h.urlSvc.GetURLRecord(ctx, shortCode)
 	if err != nil {
@@ -195,7 +195,7 @@ func (h *URLHandler) Redirect(w http.ResponseWriter, r *http.Request) {
 
 	// Check if the link has expired
 	if urlRecord.ExpiresAt != nil && time.Now().After(*urlRecord.ExpiresAt) {
-		log.Printf("--> ⏰ [EXPIRED] Short link '%s' has expired", shortCode)
+		log.Printf("--> ⏰ [EXPIRED] Short link '%s' has expired (expired at %v)", shortCode, *urlRecord.ExpiresAt)
 		http.Error(w, "This link has expired", http.StatusGone)
 		return
 	}
@@ -204,8 +204,16 @@ func (h *URLHandler) Redirect(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("--> [4] Found in DB: '%s'. Writing back to Redis cache...", originalURL)
 
-	// 4. Populate Redis Cache
-	if setErr := h.redisClient.Set(ctx, cacheKey, originalURL, 24*time.Hour).Err(); setErr != nil {
+	// 4. Populate Redis Cache with proper TTL based on expiration if available
+	ttl := 24 * time.Hour
+	if urlRecord.ExpiresAt != nil {
+		ttl = time.Until(*urlRecord.ExpiresAt)
+		if ttl < 0 {
+			ttl = time.Minute
+		}
+	}
+
+	if setErr := h.redisClient.Set(ctx, cacheKey, originalURL, ttl).Err(); setErr != nil {
 		log.Printf("--> ⚠️ [REDIS SET ERROR] Failed to write to cache: %v", setErr)
 	} else {
 		log.Printf("--> ✅ [CACHE POPULATED] Successfully cached '%s' in Redis", cacheKey)
