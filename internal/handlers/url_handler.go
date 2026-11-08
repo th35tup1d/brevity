@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"time"
 	"encoding/json"
 	"errors"
 	"log"
@@ -8,26 +9,26 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"time"
-
+	"context"
 	"brevity/internal/service"
-
+	"brevity/internal/models"
+	"github.com/segmentio/kafka-go"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 )
 
-// Define the struct fields to match what you are assigning
 type URLHandler struct {
-	urlSvc      *service.URLService
-	DB          *pgxpool.Pool
-	redisClient *redis.Client
+    DB          *pgxpool.Pool
+    RedisClient *redis.Client
+    KafkaWriter *kafka.Writer 
+    URLSvc      *service.URLService
 }
 
 func NewURLHandler(urlSvc *service.URLService, db *pgxpool.Pool, rdb *redis.Client) *URLHandler {
 	return &URLHandler{
-		urlSvc:      urlSvc,
+		URLSvc:      urlSvc,
 		DB:          db,
-		redisClient: rdb,
+		RedisClient: rdb,
 	}
 }
 
@@ -156,6 +157,16 @@ func (h *URLHandler) DeleteURL(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`{"success": true}`))
 }
 
+func parseDeviceType(ua string) string {
+    uaLower := strings.ToLower(ua)
+    if strings.Contains(uaLower, "mobile") || strings.Contains(uaLower, "android") || strings.Contains(uaLower, "iphone") {
+        return "Mobile"
+    } else if strings.Contains(uaLower, "ipad") || strings.Contains(uaLower, "tablet") {
+        return "Tablet"
+    }
+    return "Desktop"
+}
+
 func (h *URLHandler) Redirect(w http.ResponseWriter, r *http.Request) {
 	shortCode := r.PathValue("code")
 	if shortCode == "" {
@@ -173,20 +184,45 @@ func (h *URLHandler) Redirect(w http.ResponseWriter, r *http.Request) {
 	log.Printf("--> [2] Checking Redis cache for key: '%s'", cacheKey)
 
 	// 2. Try Redis Cache
-	// Note: If you want to strictly check expiration on cache hits, you can fetch 
-	// the DB record directly or store expiration metadata in Redis. Falling back 
-	// to DB or checking record validity ensures expired links cached in Redis are caught.
-	cachedURL, err := h.redisClient.Get(ctx, cacheKey).Result()
+	cachedURL, err := h.RedisClient.Get(ctx, cacheKey).Result()
 	if err == nil && cachedURL != "" {
-		// To ensure expired links aren't served from cache, we can query the DB record or 
-		// let the DB fallback handle it. But if it's in Redis, let's verify expiration via DB if needed,
-		// or query the full record first. For simplicity and robust expiration checks, 
-		// let's fall through or check expiration from DB record.
+		log.Printf("--> 🔥 [CACHE HIT] Found '%s' in Redis! Redirecting instantly to: '%s'", shortCode, cachedURL)
+
+		// Asynchronously publish click event to Kafka on Cache Hit
+		go func() {
+			event := models.ClickEvent{
+				ShortCode: shortCode,
+				Timestamp: time.Now(),
+				UserAgent: r.UserAgent(),
+				IPAddress: r.RemoteAddr,
+			}
+
+			payload, err := json.Marshal(event)
+			if err != nil {
+				log.Printf("--> ⚠️ [KAFKA] Failed to marshal click event: %v", err)
+				return
+			}
+
+			err = h.KafkaWriter.WriteMessages(context.Background(), kafka.Message{
+				Key:   []byte(shortCode),
+				Value: payload,
+			})
+			if err != nil {
+				log.Printf("--> ⚠️ [KAFKA] Failed to write click event: %v", err)
+			}
+		}()
+
+		http.Redirect(w, r, cachedURL, http.StatusTemporaryRedirect)
+		return
+	}
+
+	if err != nil {
+		log.Printf("--> ❄️ [CACHE MISS] Redis get returned error (normal if first time): %v", err)
 	}
 
 	// 3. Query PostgreSQL for the full URL record (to check expiration reliably)
 	log.Printf("--> [3] Querying PostgreSQL for short code: '%s'", shortCode)
-	urlRecord, err := h.urlSvc.GetURLRecord(ctx, shortCode)
+	urlRecord, err := h.URLSvc.GetURLRecord(ctx, shortCode)
 	if err != nil {
 		log.Printf("--> ❌ [DB ERROR] Failed to find long URL for code '%s': %v", shortCode, err)
 		http.Error(w, "Short link not found", http.StatusNotFound)
@@ -213,15 +249,56 @@ func (h *URLHandler) Redirect(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if setErr := h.redisClient.Set(ctx, cacheKey, originalURL, ttl).Err(); setErr != nil {
+	if setErr := h.RedisClient.Set(ctx, cacheKey, originalURL, ttl).Err(); setErr != nil {
 		log.Printf("--> ⚠️ [REDIS SET ERROR] Failed to write to cache: %v", setErr)
 	} else {
 		log.Printf("--> ✅ [CACHE POPULATED] Successfully cached '%s' in Redis", cacheKey)
 	}
 
 	log.Printf("--> [5] Redirecting '%s' to '%s' via Database fallback", shortCode, originalURL)
+
+	go func() {
+	    referrer := r.Header.Get("Referer")
+	    if referrer == "" {
+	        referrer = "Direct"
+	    }
+	
+	    // Get Country from proxy header (e.g., Cloudflare) or fallback
+	    country := r.Header.Get("CF-IPCountry")
+	    if country == "" {
+	        country = "BD" // Default or lookup
+	    }
+	
+	    device := parseDeviceType(r.UserAgent())
+	
+	    event := models.ClickEvent{
+	        ShortCode: shortCode,
+	        Timestamp: time.Now(),
+	        UserAgent: r.UserAgent(),
+	        IPAddress: r.RemoteAddr,
+	        Referrer:  referrer,
+	        Country:   country,
+	        Device:    device,
+	    }
+	
+	    payload, err := json.Marshal(event)
+	    if err != nil {
+	        log.Printf("--> ⚠️ [KAFKA] Failed to marshal click event: %v", err)
+	        return
+	    }
+	
+	    err = h.KafkaWriter.WriteMessages(context.Background(), kafka.Message{
+	        Key:   []byte(shortCode),
+	        Value: payload,
+	    })
+	    if err != nil {
+	        log.Printf("--> ⚠️ [KAFKA] Failed to write click event: %v", err)
+	    }
+	}()
+
 	http.Redirect(w, r, originalURL, http.StatusTemporaryRedirect)
 }
+
 
 func (h *URLHandler) GetUserURLs(w http.ResponseWriter, r *http.Request) {
 	val := r.Context().Value("user_id")
@@ -243,7 +320,7 @@ func (h *URLHandler) GetUserURLs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	links, err := h.urlSvc.GetURLsByUserID(r.Context(), userID)
+	links, err := h.URLSvc.GetURLsByUserID(r.Context(), userID)
 	if err != nil {
 		http.Error(w, "DEBUG_TEST_NEW_CODE_IS_RUNNING", http.StatusInternalServerError)
 		return
@@ -314,7 +391,7 @@ func (h *URLHandler) ShortenURL(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 6. Delegate to the service layer (passing finalExpiresAt)
-	shortURL, err := h.urlSvc.CreateShortURLWithAlias(r.Context(), createReq.LongURL, createReq.CustomAlias, userIDPtr, finalExpiresAt)
+	shortURL, err := h.URLSvc.CreateShortURLWithAlias(r.Context(), createReq.LongURL, createReq.CustomAlias, userIDPtr, finalExpiresAt)
 	if err != nil {
 		log.Println("ERROR in CreateShortURL service:", err)
 		if err.Error() == "alias is already taken" {
@@ -348,4 +425,78 @@ func (h *URLHandler) ShortenURL(w http.ResponseWriter, r *http.Request) {
 		"expires_at": finalExpiresAt,
 		"message":    message,
 	})
+}
+func (h *URLHandler) GetAnalytics(w http.ResponseWriter, r *http.Request) {
+    shortCode := r.URL.Query().Get("code")
+	log.Printf("--> [ANALYTICS] Request received for short code: '%s'", shortCode)
+    if shortCode == "" {
+        http.Error(w, "Missing short code parameter", http.StatusBadRequest)
+        return
+    }
+
+    ctx := r.Context()
+
+    // 1. Extract user ID from context (set by AuthMiddleware)
+    //userID, ok := ctx.Value("userID").(int64)
+    //if !ok {
+    //    http.Error(w, "Unauthorized", http.StatusUnauthorized)
+    //    return
+    //}
+	rawUserID, ok := ctx.Value("userID").(float64)
+	    if !ok {
+			log.Printf("--> ❌ [ANALYTICS ERROR] Failed to extract 'userID' from context")
+	        http.Error(w, "Unauthorized", http.StatusUnauthorized)
+	        return
+	    }
+	userID := int64(rawUserID)
+				
+	    // 2. Verify that the URL exists AND belongs to the authenticated user
+    var urlID int64
+    err := h.DB.QueryRow(ctx, "SELECT id FROM urls WHERE short_code = $1 AND user_id = $2", shortCode, userID).Scan(&urlID)
+    if err != nil {
+		log.Printf("--> ❌ [ANALYTICS DB ERROR] URL not found or unowned for code '%s' and user %d: %v", shortCode, userID, err)
+        log.Printf("--> 🔒 [UNAUTHORIZED ACCESS] User %d attempted to view analytics for unowned code '%s'", userID, shortCode)
+        http.Error(w, "URL not found or unauthorized", http.StatusNotFound)
+        return
+    }
+
+    // 3. Fetch total clicks using verified url_id
+    var totalClicks int
+    err = h.DB.QueryRow(ctx, `SELECT COUNT(*) FROM click_events WHERE url_id = $1`, urlID).Scan(&totalClicks)
+    if err != nil {
+        http.Error(w, "Error fetching analytics", http.StatusInternalServerError)
+        return
+    }
+
+    // 4. Fetch breakdown by device
+    deviceRows, err := h.DB.Query(ctx, `
+        SELECT device, COUNT(*) as count 
+        FROM click_events 
+        WHERE url_id = $1 
+        GROUP BY device 
+        ORDER BY count DESC`, urlID)
+    if err != nil {
+        http.Error(w, "Error fetching device stats", http.StatusInternalServerError)
+        return
+    }
+    defer deviceRows.Close()
+
+    devices := make(map[string]int)
+    for deviceRows.Next() {
+        var dev string
+        var count int
+        if err := deviceRows.Scan(&dev, &count); err == nil {
+            devices[dev] = count
+        }
+    }
+
+    // 5. Construct response
+    response := map[string]interface{}{
+        "short_code":   shortCode,
+        "total_clicks": totalClicks,
+        "devices":      devices,
+    }
+
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(response)
 }

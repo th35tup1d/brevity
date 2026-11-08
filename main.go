@@ -1,14 +1,17 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"io"
 	"io/fs"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"time"
- 	"context"
+	
+	"github.com/segmentio/kafka-go"
 	"brevity/internal/config"
 	"brevity/internal/database"
 	"brevity/internal/handlers"
@@ -47,7 +50,31 @@ func main() {
 	urlHandler := handlers.NewURLHandler(urlSvc, pgPool, redisClient)
 
 	ctx := context.Background()
-    urlSvc.StartCleanupWorker(ctx, 1*time.Hour)
+	urlSvc.StartCleanupWorker(ctx, 1*time.Hour)
+
+	// Initialize and start Kafka Analytics Consumer Worker
+	kafkaBroker := os.Getenv("KAFKA_BROKER")
+	if kafkaBroker == "" {
+		kafkaBroker = "localhost:9092" // fallback to localhost for development
+	}
+
+	kafkaWriter := &kafka.Writer{
+		Addr:     kafka.TCP(kafkaBroker),
+		Topic:    "click-events",
+		Balancer: &kafka.LeastBytes{},
+	}
+	defer kafkaWriter.Close()
+
+	// 2. Pass kafkaWriter into your URLHandler so it's not nil
+	urlHandler = &handlers.URLHandler{
+		DB:          pgPool,
+		RedisClient: redisClient,
+		KafkaWriter: kafkaWriter, // <-- This resolves the nil pointer panic
+		URLSvc:      urlSvc,
+	}
+	
+	log.Println("--> 🚀 Starting Kafka analytics consumer worker...")
+	service.StartAnalyticsConsumer(kafkaBroker, pgPool)
 
 	// 5. Setup HTTP routes & Middleware
 	mux := http.NewServeMux()
@@ -62,7 +89,8 @@ func main() {
 	mux.HandleFunc("GET /api/v1/my-urls", middleware.AuthMiddleware(urlHandler.GetMyURLs))
 	mux.HandleFunc("GET /api/user/urls", urlHandler.GetUserURLs)
 	mux.HandleFunc("DELETE /api/v1/url/delete", middleware.AuthMiddleware(urlHandler.DeleteURL))
-
+	mux.HandleFunc("GET /api/v1/analytics", middleware.AuthMiddleware(urlHandler.GetAnalytics))
+	
 	secureAndRateLimitedHandler := middleware.RateLimiter(redisClient, 20, 1*time.Minute)(
 		middleware.OptionalAuthMiddleware(urlHandler.ShortenURL),
 	)

@@ -29,6 +29,9 @@ CREATE TABLE IF NOT EXISTS click_events (
     url_id BIGINT NOT NULL REFERENCES urls(id) ON DELETE CASCADE,
     ip_address VARCHAR(45),
     user_agent TEXT,
+    referrer TEXT,
+    country VARCHAR(30) DEFAULT 'Unknown',
+    device VARCHAR(50) DEFAULT 'Desktop',
     clicked_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 

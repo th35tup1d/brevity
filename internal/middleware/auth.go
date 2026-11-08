@@ -4,7 +4,7 @@ import (
 	"context"
 	"net/http"
 	"strings"
-
+	"log"
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -37,12 +37,14 @@ func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		})
 
 		if err != nil || !token.Valid {
+			log.Printf("--> ❌ [AUTH ERROR] Token invalid or expired: %v", err)
 			http.Error(w, "Invalid or expired token", http.StatusUnauthorized)
 			return
 		}
 
 		userID, ok := claims["user_id"]
 		if !ok {
+			log.Printf("--> ❌ [AUTH ERROR] 'user_id' claim missing from token")
 			http.Error(w, "Invalid token claims", http.StatusUnauthorized)
 			return
 		}

@@ -4,13 +4,16 @@
     <meta charset="UTF-8">
     <title>My Private Links - Brevity</title>
     <style>
-        body { font-family: sans-serif; max-width: 800px; margin: 40px auto; padding: 20px; background: #f9f9f9; }
-        .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        body { font-family: sans-serif; max-width: 900px; margin: 40px auto; padding: 20px; background: #f9f9f9; }
+        .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 20px; }
         .nav { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
         table { width: 100%; border-collapse: collapse; margin-top: 15px; }
         th, td { padding: 10px; border-bottom: 1px solid #ddd; text-align: left; }
         th { background: #007bff; color: white; }
-        button { background: #dc3545; color: white; border: none; padding: 5px 10px; border-radius: 4px; cursor: pointer; }
+        button { border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; color: white; }
+        .btn-delete { background: #dc3545; }
+        .btn-analytics { background: #17a2b8; margin-right: 5px; }
+        button:hover { opacity: 0.9; }
         a { color: #007bff; text-decoration: none; }
         a:hover { text-decoration: underline; }
     </style>
@@ -21,7 +24,7 @@
         <h2>🔒 My Dashboard & Private Links</h2>
         <div>
             <a href="/index.html" style="margin-right: 15px;">Home / Shortener</a>
-            <button onclick="logout()">Logout</button>
+            <button class="btn-delete" onclick="logout()">Logout</button>
         </div>
     </div>
 
@@ -42,11 +45,32 @@
         </table>
     </div>
 
+    <!-- Analytics Panel -->
+    <div id="analytics-panel" class="card" style="display: none;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+            <h3 style="margin: 0;">Analytics for: <span id="analytics-code" style="color: #007bff;"></span></h3>
+            <button class="btn-delete" onclick="closeAnalytics()" style="padding: 4px 8px; font-size: 14px;">✕ Close</button>
+        </div>
+
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 20px;">
+            <div style="background: #f1f3f5; padding: 15px; border-radius: 6px; border: 1px solid #dee2e6;">
+                <p style="margin: 0; color: #6c757d; font-size: 14px;">Total Clicks</p>
+                <h2 id="stat-total-clicks" style="margin: 5px 0 0 0; font-size: 28px; color: #343a40;">0</h2>
+            </div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr; gap: 20px;">
+            <div style="background: #f1f3f5; padding: 15px; border-radius: 6px; border: 1px solid #dee2e6;">
+                <h4 style="margin-top: 0; color: #343a40;">Device Breakdown</h4>
+                <ul id="stat-devices-list" style="padding-left: 20px; margin: 0; color: #495057;"></ul>
+            </div>
+        </div>
+    </div>
+
     <script>
         async function fetchMyLinks() {
-            const token = localStorage.getItem('token');
+			const token = localStorage.getItem('jwt') || localStorage.getItem('token');
             if (!token) {
-                // Use replace to prevent history stack redirect loops
                 window.location.replace('/index.html');
                 return;
             }
@@ -86,7 +110,8 @@
                         <td><a href="${shortUrl}" target="_blank">${link.short_code}</a></td>
                         <td>${formattedDate}</td>
                         <td>
-                            <button onclick="deleteLink(${link.id}, this)">Delete</button>
+                            <button class="btn-analytics" onclick="loadAnalytics('${link.short_code}')">Analytics</button>
+                            <button class="btn-delete" onclick="deleteLink(${link.id}, this)">Delete</button>
                         </td>
                     `;
                     tbody.appendChild(tr);
@@ -98,10 +123,53 @@
             }
         }
 
+        async function loadAnalytics(shortCode) {
+			const token = localStorage.getItem('jwt') || localStorage.getItem('token');
+			
+            try {
+                const response = await fetch(`/api/v1/analytics?code=${shortCode}`, {
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    }
+                });
+
+                if (!response.ok) {
+                    alert('Failed to load analytics or unauthorized');
+                    return;
+                }
+
+                const data = await response.json();
+
+                document.getElementById('analytics-code').innerText = data.short_code;
+                document.getElementById('stat-total-clicks').innerText = data.total_clicks || 0;
+
+                const devicesList = document.getElementById('stat-devices-list');
+                devicesList.innerHTML = '';
+                if (data.devices && Object.keys(data.devices).length > 0) {
+                    for (const [device, count] of Object.entries(data.devices)) {
+                        const li = document.createElement('li');
+                        li.innerText = `${device}: ${count} clicks`;
+                        devicesList.appendChild(li);
+                    }
+                } else {
+                    devicesList.innerHTML = '<li>No device data recorded yet</li>';
+                }
+
+                document.getElementById('analytics-panel').style.display = 'block';
+                document.getElementById('analytics-panel').scrollIntoView({ behavior: 'smooth' });
+
+            } catch (err) {
+                console.error('Error fetching analytics:', err);
+            }
+        }
+
+        function closeAnalytics() {
+            document.getElementById('analytics-panel').style.display = 'none';
+        }
+
         async function deleteLink(id, buttonElement) {
             try {
-                const token = localStorage.getItem('token'); 
-
+ 				const token = localStorage.getItem('jwt') || localStorage.getItem('token');
                 const response = await fetch(`/api/v1/url/delete?id=${id}`, {
                     method: 'DELETE',
                     headers: {
