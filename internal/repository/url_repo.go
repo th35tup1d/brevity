@@ -136,3 +136,19 @@ func (r *URLRepository) DeleteExpiredURLs(ctx context.Context) (int64, error) {
     }
     return result.RowsAffected(), nil
 }
+
+func (r *URLRepository) IncrementClicks(ctx context.Context, shortCode string) error {
+	query := `UPDATE urls SET clicks = clicks + 1 WHERE short_code = $1`
+
+	result, err := r.db.Exec(ctx, query, shortCode)
+	if err != nil {
+		return fmt.Errorf("failed to increment clicks: %w", err)
+	}
+
+	rowsAffected := result.RowsAffected()
+	if rowsAffected == 0 {
+		return fmt.Errorf("short code not found: %s", shortCode)
+	}
+
+	return nil
+}

@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"html/template"
 	"time"
 	"encoding/json"
 	"errors"
@@ -167,12 +168,59 @@ func parseDeviceType(ua string) string {
     return "Desktop"
 }
 
+func (h *URLHandler) Dashboard(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	query := `
+		SELECT u.short_code, c.clicked_at, c.user_agent, c.ip_address, c.referrer, c.country, c.device
+		FROM click_events c
+		JOIN urls u ON c.url_id = u.id
+		ORDER BY c.clicked_at DESC
+		LIMIT 50
+	`
+	rows, err := h.DB.Query(ctx, query)
+	if err != nil {
+		log.Printf("--> ❌ [DB ERROR] Failed to load dashboard analytics: %v", err)
+		http.Error(w, "Failed to load analytics", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var clicks []models.ClickEvent
+	for rows.Next() {
+		var ce models.ClickEvent
+		if err := rows.Scan(&ce.ShortCode, &ce.Timestamp, &ce.UserAgent, &ce.IPAddress, &ce.Referrer, &ce.Country, &ce.Device); err != nil {
+			log.Printf("--> ⚠️ [SCAN ERROR] %v", err)
+			continue
+		}
+		clicks = append(clicks, ce)
+	}
+
+	data := map[string]interface{}{
+		"Clicks": clicks,
+	}
+
+	// Parse and execute the template directly
+	tmpl, err := template.ParseFiles("web/dashboard.html")
+	if err != nil {
+		log.Printf("--> ❌ [TEMPLATE ERROR] %v", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
+	if err := tmpl.Execute(w, data); err != nil {
+		log.Printf("--> ❌ [TEMPLATE EXEC ERROR] %v", err)
+	}
+}
+
 func (h *URLHandler) Redirect(w http.ResponseWriter, r *http.Request) {
 	shortCode := r.PathValue("code")
 	if shortCode == "" {
 		shortCode = strings.TrimPrefix(r.URL.Path, "/")
 	}
-	
+
+	log.Printf("--> 🚀 [REDIRECT HIT] Incoming request for short code: '%s'", shortCode)
+
 	if strings.Contains(shortCode, ".") || shortCode == "dashboard" || shortCode == "login" || shortCode == "" {
 		log.Printf("--> [1.1] Ignoring static/reserved path: '%s'", shortCode)
 		http.NotFound(w, r)
@@ -190,11 +238,27 @@ func (h *URLHandler) Redirect(w http.ResponseWriter, r *http.Request) {
 
 		// Asynchronously publish click event to Kafka on Cache Hit
 		go func() {
+			bgCtx := context.Background()
+			referrer := r.Header.Get("Referer")
+			if referrer == "" {
+				referrer = "Direct"
+			}
+
+			country := r.Header.Get("CF-IPCountry")
+			if country == "" {
+				country = "BD"
+			}
+
+			device := parseDeviceType(r.UserAgent())
+
 			event := models.ClickEvent{
 				ShortCode: shortCode,
 				Timestamp: time.Now(),
 				UserAgent: r.UserAgent(),
 				IPAddress: r.RemoteAddr,
+				Referrer:  referrer,
+				Country:   country,
+				Device:    device,
 			}
 
 			payload, err := json.Marshal(event)
@@ -203,7 +267,7 @@ func (h *URLHandler) Redirect(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			err = h.KafkaWriter.WriteMessages(context.Background(), kafka.Message{
+			err = h.KafkaWriter.WriteMessages(bgCtx, kafka.Message{
 				Key:   []byte(shortCode),
 				Value: payload,
 			})
@@ -225,9 +289,9 @@ func (h *URLHandler) Redirect(w http.ResponseWriter, r *http.Request) {
 	urlRecord, err := h.URLSvc.GetURLRecord(ctx, shortCode)
 	if err != nil {
 		log.Printf("--> ❌ [DB ERROR] Failed to find long URL for code '%s': %v", shortCode, err)
-		http.Error(w, "Short link not found", http.StatusNotFound)
+		http.NotFound(w, r)
 		return
-	}    
+	}
 
 	// Check if the link has expired
 	if urlRecord.ExpiresAt != nil && time.Now().After(*urlRecord.ExpiresAt) {
@@ -258,47 +322,48 @@ func (h *URLHandler) Redirect(w http.ResponseWriter, r *http.Request) {
 	log.Printf("--> [5] Redirecting '%s' to '%s' via Database fallback", shortCode, originalURL)
 
 	go func() {
-	    referrer := r.Header.Get("Referer")
-	    if referrer == "" {
-	        referrer = "Direct"
-	    }
-	
-	    // Get Country from proxy header (e.g., Cloudflare) or fallback
-	    country := r.Header.Get("CF-IPCountry")
-	    if country == "" {
-	        country = "BD" // Default or lookup
-	    }
-	
-	    device := parseDeviceType(r.UserAgent())
-	
-	    event := models.ClickEvent{
-	        ShortCode: shortCode,
-	        Timestamp: time.Now(),
-	        UserAgent: r.UserAgent(),
-	        IPAddress: r.RemoteAddr,
-	        Referrer:  referrer,
-	        Country:   country,
-	        Device:    device,
-	    }
-	
-	    payload, err := json.Marshal(event)
-	    if err != nil {
-	        log.Printf("--> ⚠️ [KAFKA] Failed to marshal click event: %v", err)
-	        return
-	    }
-	
-	    err = h.KafkaWriter.WriteMessages(context.Background(), kafka.Message{
-	        Key:   []byte(shortCode),
-	        Value: payload,
-	    })
-	    if err != nil {
-	        log.Printf("--> ⚠️ [KAFKA] Failed to write click event: %v", err)
-	    }
+		bgCtx := context.Background()
+
+		referrer := r.Header.Get("Referer")
+		if referrer == "" {
+			referrer = "Direct"
+		}
+
+		// Get Country from proxy header (e.g., Cloudflare) or fallback
+		country := r.Header.Get("CF-IPCountry")
+		if country == "" {
+			country = "BD"
+		}
+
+		device := parseDeviceType(r.UserAgent())
+
+		event := models.ClickEvent{
+			ShortCode: shortCode,
+			Timestamp: time.Now(),
+			UserAgent: r.UserAgent(),
+			IPAddress: r.RemoteAddr,
+			Referrer:  referrer,
+			Country:   country,
+			Device:    device,
+		}
+
+		payload, err := json.Marshal(event)
+		if err != nil {
+			log.Printf("--> ⚠️ [KAFKA] Failed to marshal click event: %v", err)
+			return
+		}
+
+		err = h.KafkaWriter.WriteMessages(bgCtx, kafka.Message{
+			Key:   []byte(shortCode),
+			Value: payload,
+		})
+		if err != nil {
+			log.Printf("--> ⚠️ [KAFKA] Failed to write click event: %v", err)
+		}
 	}()
 
 	http.Redirect(w, r, originalURL, http.StatusTemporaryRedirect)
 }
-
 
 func (h *URLHandler) GetUserURLs(w http.ResponseWriter, r *http.Request) {
 	val := r.Context().Value("user_id")
@@ -373,6 +438,12 @@ func (h *URLHandler) ShortenURL(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+    if userIDPtr != nil {
+        log.Printf("--> 🔍 [HANDLER] Extracted user ID: %d", *userIDPtr)
+    } else {
+        log.Printf("--> 🔍 [HANDLER] User is anonymous (userIDPtr is nil)")
+    }
+	
 	// 4. Enforce that custom aliases are restricted to signed-in users only
 	if createReq.CustomAlias != "" && userIDPtr == nil {
 		http.Error(w, "Custom aliases are only available for signed-in users", http.StatusUnauthorized)

@@ -50,6 +50,11 @@ func toBase62(id int64) string {
 
 // CreateShortURL handles standard random short code generation
 func (s *URLService) CreateShortURL(ctx context.Context, longURL string, userID *int64) (*models.URL, error) {
+
+	if userID != nil && *userID <= 0 {
+		userID = nil
+	}
+	
 	shortCode := generateShortCode()
 	isCustom := false
 
@@ -153,4 +158,8 @@ func (s *URLService) StartCleanupWorker(ctx context.Context, interval time.Durat
             }
         }
     }()
+}
+
+func (s *URLService) IncrementClicks(ctx context.Context, shortCode string) error {
+	return s.repo.IncrementClicks(ctx, shortCode)
 }

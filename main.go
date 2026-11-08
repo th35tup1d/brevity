@@ -55,7 +55,7 @@ func main() {
 	// Initialize and start Kafka Analytics Consumer Worker
 	kafkaBroker := os.Getenv("KAFKA_BROKER")
 	if kafkaBroker == "" {
-		kafkaBroker = "localhost:9092" // fallback to localhost for development
+		kafkaBroker = "kafka:9092"
 	}
 
 	kafkaWriter := &kafka.Writer{
@@ -74,7 +74,11 @@ func main() {
 	}
 	
 	log.Println("--> 🚀 Starting Kafka analytics consumer worker...")
-	service.StartAnalyticsConsumer(kafkaBroker, pgPool)
+	go func() {
+    	if err := service.StartAnalyticsConsumer(kafkaBroker, pgPool); err != nil {
+        	log.Printf("--> ❌ [CONSUMER ERROR] %v", err)
+    	}
+	}()
 
 	// 5. Setup HTTP routes & Middleware
 	mux := http.NewServeMux()
@@ -90,6 +94,7 @@ func main() {
 	mux.HandleFunc("GET /api/user/urls", urlHandler.GetUserURLs)
 	mux.HandleFunc("DELETE /api/v1/url/delete", middleware.AuthMiddleware(urlHandler.DeleteURL))
 	mux.HandleFunc("GET /api/v1/analytics", middleware.AuthMiddleware(urlHandler.GetAnalytics))
+	mux.HandleFunc("GET /dashboard.html", urlHandler.Dashboard)
 	
 	secureAndRateLimitedHandler := middleware.RateLimiter(redisClient, 20, 1*time.Minute)(
 		middleware.OptionalAuthMiddleware(urlHandler.ShortenURL),
@@ -126,9 +131,6 @@ func main() {
 	})
 	mux.HandleFunc("GET /index.html", func(w http.ResponseWriter, r *http.Request) {
 		serveFile(w, r, "index.html")
-	})
-	mux.HandleFunc("GET /dashboard.html", func(w http.ResponseWriter, r *http.Request) {
-		serveFile(w, r, "dashboard.html")
 	})
 	mux.HandleFunc("GET /login.html", func(w http.ResponseWriter, r *http.Request) {
 		serveFile(w, r, "login.html")

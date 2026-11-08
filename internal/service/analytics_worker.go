@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"time"
 	"sync"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/segmentio/kafka-go"
@@ -69,51 +70,106 @@ func (p *AnalyticsWorkerPool) Stop() {
 	p.wg.Wait()
 }
 
-func StartAnalyticsConsumer(brokerAddress string, db *pgxpool.Pool) {
-    r := kafka.NewReader(kafka.ReaderConfig{
-        Brokers:  []string{brokerAddress},
-        Topic:    "url-clicks",
-        GroupID:  "analytics-service-group",
-        MinBytes: 10e3,
-        MaxBytes: 1e6,
-    })
+func StartAnalyticsConsumer(brokerURL string, dbPool *pgxpool.Pool) error {
+	reader := kafka.NewReader(kafka.ReaderConfig{
+		Brokers:  []string{brokerURL},
+		Topic:    "click-events",
+		GroupID:  "brevity-analytics-group",
+		MinBytes: 10e1,
+		MaxBytes: 10e6,
+	})
+	defer reader.Close()
 
-    go func() {
-        defer r.Close()
-        ctx := context.Background()
-        for {
-            m, err := r.FetchMessage(ctx)
-            if err != nil {
-                log.Printf("--> ⚠️ [KAFKA CONSUMER] Error fetching message: %v", err)
-                break
-            }
+	log.Printf("--> 🎧 [KAFKA CONSUMER] Listening for click events on topic 'click-events'...")
 
-            var event models.ClickEvent
-            if err := json.Unmarshal(m.Value, &event); err != nil {
-                log.Printf("--> ⚠️ [KAFKA CONSUMER] Failed to unmarshal event: %v", err)
-                continue
-            }
+	ctx := context.Background()
+	for {
+		msg, err := reader.ReadMessage(ctx)
+		if err != nil {
+			// 👉 Change 'return err' to a retry backoff so it doesn't crash on startup
+			log.Printf("--> ⚠️ [KAFKA CONSUMER WARNING] Connection error (retrying in 3s): %v", err)
+			time.Sleep(3 * time.Second)
+			continue
+		}
 
-            // 1. Look up the url_id from the urls table using the short_code
-            var urlID int64
-            err = db.QueryRow(ctx, "SELECT id FROM urls WHERE short_code = $1", event.ShortCode).Scan(&urlID)
-            if err != nil {
-                log.Printf("--> ⚠️ [KAFKA CONSUMER] Short code '%s' not found, skipping analytics: %v", event.ShortCode, err)
-                continue
-            }
+		var event models.ClickEvent
+		if err := json.Unmarshal(msg.Value, &event); err != nil {
+			log.Printf("--> ⚠️ [KAFKA CONSUMER] Failed to unmarshal click event: %v", err)
+			continue
+		}
 
-            // 2. Insert the rich click event data into click_events
-            query := `INSERT INTO click_events (url_id, ip_address, user_agent, clicked_at, referrer, country, device) VALUES ($1, $2, $3, $4, $5, $6, $7)`
-            _, err = db.Exec(ctx, query, urlID, event.IPAddress, event.UserAgent, event.Timestamp, event.Referrer, event.Country, event.Device)
-            if err != nil {
-                log.Printf("--> ⚠️ [DB ERROR] Failed to save analytics for '%s': %v", event.ShortCode, err)
-                continue
-            }
+		query := `
+			INSERT INTO click_events (url_id, user_agent, ip_address, referrer, country, device, clicked_at)
+			SELECT id, $2, $3, $4, $5, $6, $7 FROM urls WHERE short_code = $1
+		`
 
-            // 3. Commit message offset
-            if err := r.CommitMessages(ctx, m); err != nil {
-                log.Printf("--> ⚠️ [KAFKA CONSUMER] Failed to commit offset: %v", err)
-            }
-        }
-    }()
+		tag, err := dbPool.Exec(ctx, query,
+			event.ShortCode,
+			event.UserAgent,
+			event.IPAddress,
+			event.Referrer,
+			event.Country,
+			event.Device,
+			event.Timestamp,
+		)
+		if err != nil {
+			log.Printf("--> ❌ [DB ERROR] Failed to record click event for '%s': %v", event.ShortCode, err)
+			continue
+		}
+
+		if tag.RowsAffected() == 0 {
+			log.Printf("--> ⚠️ [DB WARNING] Short code '%s' not found in database, click event skipped", event.ShortCode)
+			continue
+		}
+
+		log.Printf("--> ✅ [ANALYTICS] Successfully recorded click event for '%s'", event.ShortCode)
+	}
 }
+//func StartAnalyticsConsumer(broker string, db *pgxpool.Pool) {
+//    r := kafka.NewReader(kafka.ReaderConfig{
+//        Brokers:  []string{broker},
+//        Topic:    "click-events",
+//        GroupID:  "analytics-service-group",
+//        MinBytes: 10e3,
+//        MaxBytes: 1e6,
+//    })
+//
+//    go func() {
+//        defer r.Close()
+//        ctx := context.Background()
+//        for {
+//            m, err := r.FetchMessage(ctx)
+//            if err != nil {
+//                log.Printf("--> ⚠️ [KAFKA CONSUMER] Error fetching message: %v", err)
+//                break
+//            }
+//
+//            var event models.ClickEvent
+//            if err := json.Unmarshal(m.Value, &event); err != nil {
+//                log.Printf("--> ⚠️ [KAFKA CONSUMER] Failed to unmarshal event: %v", err)
+//                continue
+//            }
+//
+//            // 1. Look up the url_id from the urls table using the short_code
+//            var urlID int64
+//            err = db.QueryRow(ctx, "SELECT id FROM urls WHERE short_code = $1", event.ShortCode).Scan(&urlID)
+//            if err != nil {
+//                log.Printf("--> ⚠️ [KAFKA CONSUMER] Short code '%s' not found, skipping analytics: %v", event.ShortCode, err)
+//                continue
+//            }
+//
+//            // 2. Insert the rich click event data into click_events
+//            query := `INSERT INTO click_events (url_id, ip_address, user_agent, clicked_at, referrer, country, device) VALUES ($1, $2, $3, $4, $5, $6, $7)`
+//            _, err = db.Exec(ctx, query, urlID, event.IPAddress, event.UserAgent, event.Timestamp, event.Referrer, event.Country, event.Device)
+//            if err != nil {
+//                log.Printf("--> ⚠️ [DB ERROR] Failed to save analytics for '%s': %v", event.ShortCode, err)
+//                continue
+//            }
+//
+//            // 3. Commit message offset
+//            if err := r.CommitMessages(ctx, m); err != nil {
+//                log.Printf("--> ⚠️ [KAFKA CONSUMER] Failed to commit offset: %v", err)
+//            }
+//        }
+//    }()
+//}
