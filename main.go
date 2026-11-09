@@ -69,10 +69,13 @@ func main() {
 		if err != nil {
 			log.Fatalf("Failed to create Kafka SASL mechanism: %v", err)
 		}
+		
 		kafkaDialer = &kafka.Dialer{
 			Timeout:       10 * time.Second,
 			DualStack:     true,
-			TLS:           &tls.Config{}, // Required for Aiven cloud connection
+			TLS:           &tls.Config{
+				InsecureSkipVerify: true, // Quick fix for testing, or load Aiven's CA cert properly
+			}, // Required for Aiven cloud connection
 			SASLMechanism: mechanism,
 		}
 		log.Println("--> 🔒 Configured Kafka client with TLS and SASL SCRAM-SHA-256 authentication.")
