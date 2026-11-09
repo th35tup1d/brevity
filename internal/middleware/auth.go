@@ -14,21 +14,31 @@ var jwtSecret = []byte("your-super-secret-jwt-key-change-in-production")
 // AuthMiddleware acts as the security bouncer
 func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		var tokenStr string
+
 		// 1. Check if the Authorization header exists
 		authHeader := r.Header.Get("Authorization")
-		if authHeader == "" {
+		if authHeader != "" {
+			parts := strings.Split(authHeader, " ")
+			if len(parts) == 2 && parts[0] == "Bearer" {
+				tokenStr = parts[1]
+			}
+		}
+
+		// 2. Fallback: Check for JWT in cookies (for browser page navigation)
+		if tokenStr == "" {
+			if cookie, err := r.Cookie("jwt"); err == nil {
+				tokenStr = cookie.Value
+			} else if cookie, err := r.Cookie("token"); err == nil {
+				tokenStr = cookie.Value
+			}
+		}
+
+		if tokenStr == "" {
 			http.Error(w, "Missing authorization token", http.StatusUnauthorized)
 			return
 		}
 
-		// 2. Expecting format: "Bearer <token_string>"
-		parts := strings.Split(authHeader, " ")
-		if len(parts) != 2 || parts[0] != "Bearer" {
-			http.Error(w, "Invalid authorization format. Use 'Bearer <token>'", http.StatusUnauthorized)
-			return
-		}
-
-		tokenStr := parts[1]
 		claims := jwt.MapClaims{}
 
 		// 3. Parse and validate the JWT token
@@ -52,7 +62,7 @@ func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		// Attach userID and email to the request's context
 		ctx := context.WithValue(r.Context(), "userID", userID)
 		ctx = context.WithValue(ctx, "userEmail", claims["email"])
-		
+
 		// Pass the request down with the new context attached
 		next.ServeHTTP(w, r.WithContext(ctx))
 	}

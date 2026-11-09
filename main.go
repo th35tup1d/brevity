@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"embed"
 	"io"
 	"io/fs"
@@ -10,8 +11,9 @@ import (
 	"os"
 	"strings"
 	"time"
-	
+
 	"github.com/segmentio/kafka-go"
+	"github.com/segmentio/kafka-go/sasl/scram"
 	"brevity/internal/config"
 	"brevity/internal/database"
 	"brevity/internal/handlers"
@@ -52,32 +54,61 @@ func main() {
 	ctx := context.Background()
 	urlSvc.StartCleanupWorker(ctx, 1*time.Hour)
 
-	// Initialize and start Kafka Analytics Consumer Worker
+	// Initialize and start Kafka Analytics Consumer Worker with TLS & SASL Auth
 	kafkaBroker := os.Getenv("KAFKA_BROKER")
 	if kafkaBroker == "" {
 		kafkaBroker = "kafka:9092"
+	}
+
+	kafkaUser := os.Getenv("KAFKA_USERNAME")
+	kafkaPass := os.Getenv("KAFKA_PASSWORD")
+
+	var kafkaDialer *kafka.Dialer
+	if kafkaUser != "" && kafkaPass != "" {
+		mechanism, err := scram.Mechanism(scram.SHA256, kafkaUser, kafkaPass)
+		if err != nil {
+			log.Fatalf("Failed to create Kafka SASL mechanism: %v", err)
+		}
+		kafkaDialer = &kafka.Dialer{
+			Timeout:       10 * time.Second,
+			DualStack:     true,
+			TLS:           &tls.Config{}, // Required for Aiven cloud connection
+			SASLMechanism: mechanism,
+		}
+		log.Println("--> 🔒 Configured Kafka client with TLS and SASL SCRAM-SHA-256 authentication.")
+	} else {
+		// Fallback for local unsecured Docker Compose setup
+		kafkaDialer = &kafka.Dialer{
+			Timeout:   10 * time.Second,
+			DualStack: true,
+		}
 	}
 
 	kafkaWriter := &kafka.Writer{
 		Addr:     kafka.TCP(kafkaBroker),
 		Topic:    "click-events",
 		Balancer: &kafka.LeastBytes{},
+		Transport: &kafka.Transport{
+			TLS:       kafkaDialer.TLS,
+			SASL:      kafkaDialer.SASLMechanism,
+			DialTimeout: kafkaDialer.Timeout,
+		},
 	}
 	defer kafkaWriter.Close()
 
-	// 2. Pass kafkaWriter into your URLHandler so it's not nil
+	// Pass kafkaWriter into your URLHandler so it's not nil
 	urlHandler = &handlers.URLHandler{
 		DB:          pgPool,
 		RedisClient: redisClient,
-		KafkaWriter: kafkaWriter, // <-- This resolves the nil pointer panic
+		KafkaWriter: kafkaWriter,
 		URLSvc:      urlSvc,
 	}
 	
 	log.Println("--> 🚀 Starting Kafka analytics consumer worker...")
 	go func() {
-    	if err := service.StartAnalyticsConsumer(kafkaBroker, pgPool); err != nil {
-        	log.Printf("--> ❌ [CONSUMER ERROR] %v", err)
-    	}
+		if err := service.StartAnalyticsConsumerWithDialer(kafkaBroker, pgPool, kafkaDialer); err != nil {
+			log.Printf("--> ❌ [CONSUMER ERROR] %v", err)
+		}
 	}()
 
 	// 5. Setup HTTP routes & Middleware
@@ -91,10 +122,10 @@ func main() {
 	mux.HandleFunc("POST /api/v1/register", authHandler.Register)
 	mux.HandleFunc("POST /api/v1/login", authHandler.Login)
 	mux.HandleFunc("GET /api/v1/my-urls", middleware.AuthMiddleware(urlHandler.GetMyURLs))
-	mux.HandleFunc("GET /api/user/urls", urlHandler.GetUserURLs)
+	mux.HandleFunc("GET /api/user/urls", middleware.AuthMiddleware(urlHandler.GetUserURLs))
 	mux.HandleFunc("DELETE /api/v1/url/delete", middleware.AuthMiddleware(urlHandler.DeleteURL))
 	mux.HandleFunc("GET /api/v1/analytics", middleware.AuthMiddleware(urlHandler.GetAnalytics))
-	mux.HandleFunc("GET /dashboard.html", urlHandler.Dashboard)
+	mux.HandleFunc("GET /dashboard.html", middleware.AuthMiddleware(urlHandler.Dashboard))
 	
 	secureAndRateLimitedHandler := middleware.RateLimiter(redisClient, 20, 1*time.Minute)(
 		middleware.OptionalAuthMiddleware(urlHandler.ShortenURL),
@@ -107,7 +138,6 @@ func main() {
 		log.Fatalf("Failed to create embedded file system: %v", err)
 	}
 
-	// Helper function to serve files safely without redirect loops
 	serveFile := func(w http.ResponseWriter, r *http.Request, filename string) {
 		file, err := webFS.Open(filename)
 		if err != nil {
@@ -125,7 +155,7 @@ func main() {
 		http.ServeContent(w, r, stat.Name(), stat.ModTime(), file.(io.ReadSeeker))
 	}
 
-	// Explicit Page Routes with Methods (Using /{$} for precise root matching)
+	// Explicit Page Routes with Methods
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		serveFile(w, r, "index.html")
 	})

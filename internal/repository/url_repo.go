@@ -12,6 +12,15 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+type AnalyticsEvent struct {
+	ID        int       `json:"id"`
+	ShortCode string    `json:"short_code"`
+	ClickedAt time.Time `json:"clicked_at"`
+	IPAddress string    `json:"ip_address"`
+	UserAgent string    `json:"user_agent"`
+}
+
+
 type URLRepository struct {
 	db *pgxpool.Pool
 }
@@ -151,4 +160,30 @@ func (r *URLRepository) IncrementClicks(ctx context.Context, shortCode string) e
 	}
 
 	return nil
+}
+
+func (r *URLRepository) GetAnalyticsForUser(ctx context.Context, userID int) ([]AnalyticsEvent, error) {
+	query := `
+		SELECT c.id, c.short_code, c.clicked_at, c.ip_address, c.user_agent
+		FROM click_events c
+		JOIN urls u ON c.short_code = u.short_code
+		WHERE u.user_id = $1
+		ORDER BY c.clicked_at DESC
+		LIMIT 50;
+	`
+	rows, err := r.db.Query(ctx, query, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var events []AnalyticsEvent
+	for rows.Next() {
+		var e AnalyticsEvent
+		if err := rows.Scan(&e.ID, &e.ShortCode, &e.ClickedAt, &e.IPAddress, &e.UserAgent); err != nil {
+			return nil, err
+		}
+		events = append(events, e)
+	}
+	return events, nil
 }

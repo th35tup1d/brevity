@@ -171,14 +171,37 @@ func parseDeviceType(ua string) string {
 func (h *URLHandler) Dashboard(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
+	// 1. Extract userID from context (supporting float64 or int64)
+	val := ctx.Value("userID")
+	if val == nil {
+		val = ctx.Value("user_id")
+	}
+
+	var userID int64
+	switch v := val.(type) {
+	case float64:
+		userID = int64(v)
+	case int:
+		userID = int64(v)
+	case int64:
+		userID = v
+	default:
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+
+	log.Printf("--> 🔍 [AUTH DEBUG] Extracted userID: %v (Type: %T)", userID, userID)
+		
+	// 2. Filter query strictly by the authenticated user's ID
 	query := `
 		SELECT u.short_code, c.clicked_at, c.user_agent, c.ip_address, c.referrer, c.country, c.device
 		FROM click_events c
 		JOIN urls u ON c.url_id = u.id
+		WHERE u.user_id = $1
 		ORDER BY c.clicked_at DESC
 		LIMIT 50
 	`
-	rows, err := h.DB.Query(ctx, query)
+	rows, err := h.DB.Query(ctx, query, userID)
 	if err != nil {
 		log.Printf("--> ❌ [DB ERROR] Failed to load dashboard analytics: %v", err)
 		http.Error(w, "Failed to load analytics", http.StatusInternalServerError)
@@ -364,6 +387,7 @@ func (h *URLHandler) Redirect(w http.ResponseWriter, r *http.Request) {
 
 	http.Redirect(w, r, originalURL, http.StatusTemporaryRedirect)
 }
+//REDIRECT ENDS
 
 func (h *URLHandler) GetUserURLs(w http.ResponseWriter, r *http.Request) {
 	val := r.Context().Value("user_id")
@@ -498,76 +522,85 @@ func (h *URLHandler) ShortenURL(w http.ResponseWriter, r *http.Request) {
 	})
 }
 func (h *URLHandler) GetAnalytics(w http.ResponseWriter, r *http.Request) {
-    shortCode := r.URL.Query().Get("code")
+	shortCode := r.URL.Query().Get("code")
 	log.Printf("--> [ANALYTICS] Request received for short code: '%s'", shortCode)
-    if shortCode == "" {
-        http.Error(w, "Missing short code parameter", http.StatusBadRequest)
-        return
-    }
+	if shortCode == "" {
+		http.Error(w, "Missing short code parameter", http.StatusBadRequest)
+		return
+	}
 
-    ctx := r.Context()
+	ctx := r.Context()
 
-    // 1. Extract user ID from context (set by AuthMiddleware)
-    //userID, ok := ctx.Value("userID").(int64)
-    //if !ok {
-    //    http.Error(w, "Unauthorized", http.StatusUnauthorized)
-    //    return
-    //}
-	rawUserID, ok := ctx.Value("userID").(float64)
-	    if !ok {
-			log.Printf("--> ❌ [ANALYTICS ERROR] Failed to extract 'userID' from context")
-	        http.Error(w, "Unauthorized", http.StatusUnauthorized)
-	        return
-	    }
-	userID := int64(rawUserID)
-				
-	    // 2. Verify that the URL exists AND belongs to the authenticated user
-    var urlID int64
-    err := h.DB.QueryRow(ctx, "SELECT id FROM urls WHERE short_code = $1 AND user_id = $2", shortCode, userID).Scan(&urlID)
-    if err != nil {
+	// Robustly extract userID from context (supporting float64 from JWT claims or int)
+	var userID int64
+	val := ctx.Value("userID")
+	switch v := val.(type) {
+	case float64:
+		userID = int64(v)
+	case int:
+		userID = int64(v)
+	case int64:
+		userID = v
+	default:
+		log.Printf("--> ❌ [ANALYTICS ERROR] Failed to extract valid 'userID' from context, type was %T", val)
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// 2. Verify that the URL exists AND belongs to the authenticated user
+	var urlID int64
+	err := h.DB.QueryRow(ctx, "SELECT id FROM urls WHERE short_code = $1 AND user_id = $2", shortCode, userID).Scan(&urlID)
+	if err != nil {
 		log.Printf("--> ❌ [ANALYTICS DB ERROR] URL not found or unowned for code '%s' and user %d: %v", shortCode, userID, err)
-        log.Printf("--> 🔒 [UNAUTHORIZED ACCESS] User %d attempted to view analytics for unowned code '%s'", userID, shortCode)
-        http.Error(w, "URL not found or unauthorized", http.StatusNotFound)
-        return
-    }
+		log.Printf("--> 🔒 [UNAUTHORIZED ACCESS] User %d attempted to view analytics for unowned code '%s'", userID, shortCode)
+		http.Error(w, "URL not found or unauthorized", http.StatusNotFound)
+		return
+	}
 
-    // 3. Fetch total clicks using verified url_id
-    var totalClicks int
-    err = h.DB.QueryRow(ctx, `SELECT COUNT(*) FROM click_events WHERE url_id = $1`, urlID).Scan(&totalClicks)
-    if err != nil {
-        http.Error(w, "Error fetching analytics", http.StatusInternalServerError)
-        return
-    }
+	// 3. Fetch total clicks using verified url_id (or fallback to counting click_events if urls.clicks isn't synced)
+	var totalClicks int
+	err = h.DB.QueryRow(ctx, `SELECT COUNT(*) FROM click_events WHERE url_id = $1`, urlID).Scan(&totalClicks)
+	if err != nil {
+		log.Printf("--> ⚠️ [ANALYTICS] Failed to count click_events, falling back to urls.clicks table: %v", err)
+		// Fallback to checking the counter directly on the urls table if click_events is empty
+		_ = h.DB.QueryRow(ctx, `SELECT clicks FROM urls WHERE id = $1`, urlID).Scan(&totalClicks)
+	}
 
-    // 4. Fetch breakdown by device
-    deviceRows, err := h.DB.Query(ctx, `
-        SELECT device, COUNT(*) as count 
-        FROM click_events 
-        WHERE url_id = $1 
-        GROUP BY device 
-        ORDER BY count DESC`, urlID)
-    if err != nil {
-        http.Error(w, "Error fetching device stats", http.StatusInternalServerError)
-        return
-    }
-    defer deviceRows.Close()
+	// 4. Fetch breakdown by device
+	deviceRows, err := h.DB.Query(ctx, `
+		SELECT device, COUNT(*) as count
+		FROM click_events
+		WHERE url_id = $1
+		GROUP BY device
+		ORDER BY count DESC`, urlID)
+	if err != nil {
+		log.Printf("--> ⚠️ [ANALYTICS WARNING] Error fetching device stats: %v", err)
+		// Don't fail the whole request if device stats fail, just return empty map
+		deviceRows = nil
+	}
 
-    devices := make(map[string]int)
-    for deviceRows.Next() {
-        var dev string
-        var count int
-        if err := deviceRows.Scan(&dev, &count); err == nil {
-            devices[dev] = count
-        }
-    }
+	devices := make(map[string]int)
+	if deviceRows != nil {
+		defer deviceRows.Close()
+		for deviceRows.Next() {
+			var dev string
+			var count int
+			if err := deviceRows.Scan(&dev, &count); err == nil {
+				if dev == "" {
+					dev = "unknown"
+				}
+				devices[dev] = count
+			}
+		}
+	}
 
-    // 5. Construct response
-    response := map[string]interface{}{
-        "short_code":   shortCode,
-        "total_clicks": totalClicks,
-        "devices":      devices,
-    }
+	// 5. Construct response
+	response := map[string]interface{}{
+		"short_code":   shortCode,
+		"total_clicks": totalClicks,
+		"devices":      devices,
+	}
 
-    w.Header().Set("Content-Type", "application/json")
-    json.NewEncoder(w).Encode(response)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
 }
